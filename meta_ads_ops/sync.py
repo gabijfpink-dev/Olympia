@@ -313,7 +313,8 @@ class CitySync:
 
             except GraphError as exc:
                 logger.error("Erro na cidade %s: %s", cidade, exc)
-                result.erros.append({"city": cidade, "error": str(exc)})
+                logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+                result.erros.append({"city": cidade, "error": str(exc), "raw": exc.error})
 
         return result
 
@@ -361,6 +362,7 @@ class CitySync:
 
             except GraphError as exc:
                 logger.error("Erro ativando %s: %s", cidade, exc)
-                result.erros.append({"city": cidade, "error": str(exc)})
+                logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+                result.erros.append({"city": cidade, "error": str(exc), "raw": exc.error})
 
         return result

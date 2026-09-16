@@ -23,7 +23,21 @@ class GraphError(RuntimeError):
 
     def __init__(self, error: dict[str, Any]):
         self.error = error
-        super().__init__(error.get("message", str(error)))
+
+        partes = []
+        if error.get("message"):
+            partes.append(error["message"])
+        if error.get("error_user_title"):
+            partes.append(f"título: {error['error_user_title']}")
+        if error.get("error_user_msg"):
+            partes.append(f"detalhe: {error['error_user_msg']}")
+        if error.get("error_subcode"):
+            partes.append(f"subcode: {error['error_subcode']}")
+        blame = (error.get("error_data") or {}).get("blame_field_specs")
+        if blame:
+            partes.append(f"campo apontado: {blame}")
+
+        super().__init__(" | ".join(partes) if partes else str(error))
 
 
 class RateLimitError(RuntimeError):
