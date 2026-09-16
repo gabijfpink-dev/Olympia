@@ -67,8 +67,22 @@ def load_secrets(config_path: str = "config.py") -> Secrets:
 
     resolved = Path(config_path)
     if not resolved.is_file():
+        example = resolved.with_name("config.example.py")
+        if not example.is_file():
+            example = Path(__file__).resolve().parent.parent / "config.example.py"
+
+        if example.is_file():
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+            raise FileNotFoundError(
+                f"Criei {resolved} agora (a partir do modelo). Abra esse arquivo, preencha "
+                "ACCESS_TOKEN / AD_ACCOUNT_ID / API_VERSION com os valores reais, salve "
+                "(Ctrl+S) e rode o comando de novo."
+            )
+
         raise FileNotFoundError(
-            f"Não encontrei {config_path}. Copie config.example.py para config.py e preencha."
+            f"Não encontrei {config_path} nem um config.example.py para copiar. Crie "
+            f"{config_path} manualmente com ACCESS_TOKEN, AD_ACCOUNT_ID e API_VERSION."
         )
 
     spec = importlib.util.spec_from_file_location("meta_ads_ops_local_config", resolved)

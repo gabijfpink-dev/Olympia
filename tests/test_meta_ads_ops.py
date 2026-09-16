@@ -5,9 +5,43 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from meta_ads_ops.clients import ClientConfig
+from meta_ads_ops.clients import ClientConfig, load_secrets
 from meta_ads_ops.normalize import normalizar
 from meta_ads_ops.sync import CitySync
+
+
+class LoadSecretsTests(unittest.TestCase):
+    def test_missing_config_is_auto_created_from_example_and_raises_clear_error(self):
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.py"
+            self.assertFalse(config_path.exists())
+
+            with self.assertRaises(FileNotFoundError) as ctx:
+                load_secrets(str(config_path))
+
+            self.assertTrue(config_path.exists(), "config.py deveria ter sido criado a partir do modelo")
+            self.assertIn("preencha", str(ctx.exception).lower())
+
+    def test_config_with_blank_fields_raises_value_error(self):
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.py"
+            config_path.write_text('ACCESS_TOKEN = ""\nAD_ACCOUNT_ID = ""\nAPI_VERSION = ""\n', encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                load_secrets(str(config_path))
+
+    def test_config_with_real_values_loads_and_normalizes_account_id(self):
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.py"
+            config_path.write_text(
+                'ACCESS_TOKEN = "abc"\nAD_ACCOUNT_ID = "123"\nAPI_VERSION = "v21.0"\n', encoding="utf-8"
+            )
+
+            secrets = load_secrets(str(config_path))
+
+            self.assertEqual(secrets.access_token, "abc")
+            self.assertEqual(secrets.ad_account_id, "act_123")
+            self.assertEqual(secrets.api_version, "v21.0")
 
 
 class NormalizeTests(unittest.TestCase):
