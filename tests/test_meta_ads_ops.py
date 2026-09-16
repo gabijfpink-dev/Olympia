@@ -240,6 +240,76 @@ class DryRunTests(unittest.TestCase):
             self.assertEqual(len(result.adsets_criados), 1)
             self.assertTrue(result.adsets_criados[0]["adset_id"].startswith("DRY_RUN_"))
 
+    def test_dry_run_hash_never_poisons_cache_for_a_later_real_run(self):
+        """Regressão: um --dry-run rodado antes não pode fazer uma rodada real
+        depois enviar um image_hash falso pra Meta (bug real encontrado em produção)."""
+        with TemporaryDirectory() as tmp:
+            images_folder = Path(tmp) / "images"
+            images_folder.mkdir()
+            (images_folder / "img.jpg").write_bytes(b"x")
+
+            excel_path = Path(tmp) / "planilha.xlsx"
+            pd.DataFrame(
+                [{
+                    "city": "Cidade Pronta",
+                    "url": "https://exemplo.com",
+                    "image": "img.jpg",
+                    "primary_text": "t",
+                    "headline": "h",
+                    "description": "d",
+                }]
+            ).to_excel(excel_path, index=False)
+
+            client = ClientConfig(
+                name="regressao",
+                campaign_id="CAMPANHA_1",
+                model_adset_id="MODEL_ID",
+                page_id="PAGE_1",
+                excel_file=str(excel_path),
+                images_folder=str(images_folder),
+            )
+            state_dir = str(Path(tmp) / ".state")
+
+            # Cidade Pronta já tem adset+ad no FakeGraph, então o dry-run não
+            # chegaria a resolver a imagem por esse caminho — forço a
+            # resolução direta, como uma rodada de dry-run teria feito antes
+            # de alguém já ter anúncio pronto para outra cidade.
+            dry_sync = CitySync(FakeGraph(), client, ad_account_id="act_1", dry_run=True, state_dir=state_dir)
+            fake_hash = dry_sync.resolve_image_hash("img.jpg")
+            self.assertTrue(fake_hash.startswith("DRY_RUN_HASH::"))
+
+            cache_file = Path(state_dir) / "regressao_image_hashes.json"
+            if cache_file.exists():
+                self.assertNotIn("DRY_RUN_HASH::", cache_file.read_text(encoding="utf-8"))
+
+            real_graph = FakeGraph()
+            real_sync = CitySync(real_graph, client, ad_account_id="act_1", dry_run=False, state_dir=state_dir)
+            real_hash = real_sync.resolve_image_hash("img.jpg")
+
+            self.assertEqual(real_hash, "HASH_FAKE")  # vem do post_image real do FakeGraph, não do cache
+
+    def test_poisoned_cache_from_before_the_fix_self_heals(self):
+        with TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / ".state"
+            state_dir.mkdir()
+            (state_dir / "cliente_image_hashes.json").write_text(
+                json.dumps({"img.jpg": "DRY_RUN_HASH::img.jpg", "outra.jpg": "HASH_REAL_OK"}),
+                encoding="utf-8",
+            )
+
+            client = ClientConfig(
+                name="cliente",
+                campaign_id="C",
+                model_adset_id="M",
+                page_id="P",
+                excel_file="nao-usado.xlsx",
+                images_folder=str(tmp),
+            )
+            sync = CitySync(FakeGraph(), client, ad_account_id="act_1", dry_run=False, state_dir=str(state_dir))
+
+            self.assertNotIn("img.jpg", sync._image_cache)
+            self.assertEqual(sync._image_cache.get("outra.jpg"), "HASH_REAL_OK")
+
 
 if __name__ == "__main__":
     unittest.main()

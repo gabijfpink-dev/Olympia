@@ -144,9 +144,20 @@ class CitySync:
     def _load_image_cache(self) -> dict[str, str]:
         if self._image_cache_path.is_file():
             try:
-                return json.loads(self._image_cache_path.read_text(encoding="utf-8"))
+                cache = json.loads(self._image_cache_path.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 logger.warning("Cache de hash de imagem corrompido, ignorando: %s", self._image_cache_path)
+                return {}
+
+            # Autocorreção: versões antigas podiam gravar hashes falsos de
+            # dry-run nesse arquivo; nunca reaproveitar um valor desses.
+            limpo = {k: v for k, v in cache.items() if not str(v).startswith("DRY_RUN_HASH::")}
+            if len(limpo) != len(cache):
+                logger.warning(
+                    "Removidos %d hash(es) falso(s) de dry-run do cache %s",
+                    len(cache) - len(limpo), self._image_cache_path,
+                )
+            return limpo
         return {}
 
     def _save_image_cache(self) -> None:
@@ -164,13 +175,15 @@ class CitySync:
             return None
 
         if self.dry_run:
-            image_hash = f"DRY_RUN_HASH::{image_name}"
-        else:
-            resp = self.graph.post_image(f"{self.ad_account_id}/adimages", path)
-            imagens = resp.get("images") or {}
-            if not imagens:
-                return None
-            image_hash = list(imagens.values())[0]["hash"]
+            # Nunca persiste no cache real: um hash falso de dry-run não pode
+            # sobreviver para "enganar" uma rodada de verdade depois.
+            return f"DRY_RUN_HASH::{image_name}"
+
+        resp = self.graph.post_image(f"{self.ad_account_id}/adimages", path)
+        imagens = resp.get("images") or {}
+        if not imagens:
+            return None
+        image_hash = list(imagens.values())[0]["hash"]
 
         self._image_cache[image_name] = image_hash
         self._save_image_cache()
