@@ -7,5 +7,6 @@
   "excel_file": "C:/MetaAPI/Bebetto/bebetto_lote_3.xlsx",
   "images_folder": "C:/MetaAPI/Bebetto/images/lote_3_portraits/Lote 3",
   "authorization_category": "POLITICAL",
-  "ad_name": "01"
+  "ad_name": "01",
+  "fallback_state": "São Paulo"
 }

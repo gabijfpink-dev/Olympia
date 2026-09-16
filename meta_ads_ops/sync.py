@@ -39,6 +39,7 @@ MODEL_ADSET_FIELDS = (
 @dataclass
 class SyncResult:
     adsets_criados: list[dict[str, Any]] = field(default_factory=list)
+    adsets_fallback_estado: list[dict[str, Any]] = field(default_factory=list)
     ads_criados: list[dict[str, Any]] = field(default_factory=list)
     ja_prontos: list[str] = field(default_factory=list)
     cidades_nao_encontradas: list[str] = field(default_factory=list)
@@ -47,6 +48,7 @@ class SyncResult:
     def as_dict(self) -> dict[str, Any]:
         return {
             "adsets_criados": self.adsets_criados,
+            "adsets_fallback_estado": self.adsets_fallback_estado,
             "ads_criados": self.ads_criados,
             "ja_prontos": len(self.ja_prontos),
             "cidades_nao_encontradas": self.cidades_nao_encontradas,
@@ -70,6 +72,7 @@ class CitySync:
         self._image_cache_path = Path(state_dir) / f"{client.name}_image_hashes.json"
         self._image_cache = self._load_image_cache()
         self._dry_run_counter = 0
+        self._state_geo_cache: dict[str, dict[str, Any] | None] = {}
 
     # ------------------------------------------------------------------
     # Leitura
@@ -137,6 +140,36 @@ class CitySync:
 
         return None
 
+    def search_state(self, nome_estado: str) -> dict[str, Any] | None:
+        """Busca a geolocalização de um estado (region) — usado como fallback
+        quando uma cidade não é encontrada com segurança."""
+        if nome_estado in self._state_geo_cache:
+            return self._state_geo_cache[nome_estado]
+
+        data = self.graph.get(
+            "search",
+            {
+                "type": "adgeolocation",
+                "location_types": json.dumps(["region"]),
+                "q": nome_estado,
+                "country_code": "BR",
+                "limit": 20,
+            },
+        )
+        resultados = data.get("data", [])
+        alvo = normalizar(nome_estado)
+
+        encontrado = next(
+            (
+                local for local in resultados
+                if normalizar(local.get("name", "")) == alvo
+                and str(local.get("country_code", "")).upper() == "BR"
+            ),
+            None,
+        )
+        self._state_geo_cache[nome_estado] = encontrado
+        return encontrado
+
     # ------------------------------------------------------------------
     # Imagem
     # ------------------------------------------------------------------
@@ -193,18 +226,19 @@ class CitySync:
     # Criação
     # ------------------------------------------------------------------
 
-    def _clone_adset_params(self, modelo: dict[str, Any], cidade: str, local: dict[str, Any]) -> dict[str, Any]:
-        targeting = copy.deepcopy(modelo["targeting"])
-        targeting.setdefault("geo_locations", {})
-
+    def _geo_locations_for_city(self, modelo: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
         cidades_modelo = modelo.get("targeting", {}).get("geo_locations", {}).get("cities", [])
         raio = cidades_modelo[0].get("radius") if cidades_modelo else 40
+        return {"cities": [{"key": str(local.get("key")), "radius": raio, "distance_unit": "kilometer"}]}
 
-        targeting["geo_locations"]["cities"] = [
-            {"key": str(local.get("key")), "radius": raio, "distance_unit": "kilometer"}
-        ]
-        for chave in ("regions", "countries", "country_groups"):
-            targeting["geo_locations"].pop(chave, None)
+    def _geo_locations_for_state(self, estado_local: dict[str, Any]) -> dict[str, Any]:
+        return {"regions": [{"key": str(estado_local.get("key"))}]}
+
+    def _clone_adset_params(self, modelo: dict[str, Any], cidade: str, geo_locations: dict[str, Any]) -> dict[str, Any]:
+        targeting = copy.deepcopy(modelo["targeting"])
+        # Substitui geo_locations inteiramente (não mescla) — nunca deixar
+        # cidade+região do modelo vazando junto com a localização nova.
+        targeting["geo_locations"] = geo_locations
 
         params: dict[str, Any] = {
             "name": cidade,
@@ -291,17 +325,38 @@ class CitySync:
 
                 if adset is None:
                     local = self.search_city(cidade)
-                    if not local or not local.get("key"):
+                    usou_fallback_estado = False
+
+                    if local and local.get("key"):
+                        geo_locations = self._geo_locations_for_city(modelo, local)
+                    elif self.client.fallback_state:
+                        estado_local = self.search_state(self.client.fallback_state)
+                        if not estado_local or not estado_local.get("key"):
+                            logger.warning(
+                                "Cidade '%s' não encontrada E o estado de fallback '%s' também não "
+                                "resolveu — pulando.", cidade, self.client.fallback_state,
+                            )
+                            result.cidades_nao_encontradas.append(cidade)
+                            continue
+                        geo_locations = self._geo_locations_for_state(estado_local)
+                        usou_fallback_estado = True
+                        logger.warning(
+                            "Cidade não encontrada com segurança: %s — criando com segmentação "
+                            "por estado (%s) em vez de raio de cidade.", cidade, self.client.fallback_state,
+                        )
+                    else:
                         logger.warning("Cidade não encontrada com segurança: %s", cidade)
                         result.cidades_nao_encontradas.append(cidade)
                         continue
 
-                    params = self._clone_adset_params(modelo, cidade, local)
+                    params = self._clone_adset_params(modelo, cidade, geo_locations)
                     criado = self._create_adset(params)
                     adset = {"id": criado["id"], "name": cidade, "status": "PAUSED"}
                     existing_adsets[chave] = adset
                     ads_by_adset.setdefault(str(adset["id"]), [])
                     result.adsets_criados.append({"city": cidade, "adset_id": adset["id"]})
+                    if usou_fallback_estado:
+                        result.adsets_fallback_estado.append({"city": cidade, "adset_id": adset["id"]})
                     logger.info("Adset criado: %s -> %s", cidade, adset["id"])
                     time.sleep(1)
 

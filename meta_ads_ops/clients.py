@@ -26,6 +26,7 @@ class ClientConfig:
     instagram_actor_id: str | None = None
     authorization_category: str | None = None
     ad_name: str = "01"
+    fallback_state: str | None = None
 
 
 REQUIRED_CLIENT_FIELDS = ["name", "campaign_id", "model_adset_id", "page_id", "excel_file", "images_folder"]
@@ -48,6 +49,7 @@ def load_client(path: str) -> ClientConfig:
         instagram_actor_id=str(data["instagram_actor_id"]) if data.get("instagram_actor_id") else None,
         authorization_category=data.get("authorization_category") or None,
         ad_name=str(data.get("ad_name", "01")),
+        fallback_state=data.get("fallback_state") or None,
     )
 
 

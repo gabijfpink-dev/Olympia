@@ -58,11 +58,17 @@ automaticamente pulada (checado ao vivo na API, não em arquivo local).
 ## Cidade não encontrada
 
 Se a busca de geolocalização não achar a cidade com segurança (nome
-ambíguo, mais de uma cidade com o mesmo nome em estados diferentes etc.),
-ela entra em `cidades_nao_encontradas` no resumo — nada é criado às cegas.
-Nesse caso, crie o adset manualmente no Gerenciador de Anúncios e rode
-`sync` de novo; ele vai reconhecer o adset (por nome) e seguir para
-criativo + anúncio.
+ambíguo, mais de uma cidade com o mesmo nome em estados diferentes etc.):
+
+- **Sem `fallback_state` configurado**: ela entra em `cidades_nao_encontradas`
+  no resumo e nada é criado — crie o adset manualmente no Gerenciador de
+  Anúncios e rode `sync` de novo; ele reconhece o adset por nome e segue
+  para criativo + anúncio.
+- **Com `fallback_state` configurado** (ex. `"São Paulo"` no
+  `clients/bebetto.json`): o adset é criado automaticamente com o nome da
+  cidade, mas segmentado pelo **estado inteiro** em vez de um raio de
+  cidade. Essas cidades aparecem separadas em `adsets_fallback_estado` no
+  resumo, para você revisar o targeting delas depois se quiser refinar.
 
 ## Anúncios/campanhas comerciais vs. eleitorais
 

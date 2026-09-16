@@ -72,13 +72,17 @@ class FakeGraph:
         self.adsets = [{"id": "ADSET_EXISTENTE", "name": "Cidade Pronta", "status": "PAUSED"}]
         self.ads = [{"id": "AD_1", "name": "01", "status": "PAUSED", "adset_id": "ADSET_EXISTENTE"}]
         self.search_results = {"cidade nova": {"key": "111", "name": "Cidade Nova", "region": "Sao Paulo", "country_code": "BR"}}
+        self.state_results = {"sao paulo": {"key": "SP_STATE_KEY", "name": "São Paulo", "country_code": "BR"}}
 
     def get(self, path, params=None):
         if path == "MODEL_ID":
             return self.model_adset
         if path == "search":
             q = normalizar(params["q"])
-            local = self.search_results.get(q)
+            if "region" in params.get("location_types", ""):
+                local = self.state_results.get(q)
+            else:
+                local = self.search_results.get(q)
             return {"data": [local] if local else []}
         raise AssertionError(f"GET inesperado: {path}")
 
@@ -200,6 +204,65 @@ class CitySyncTests(unittest.TestCase):
         creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
         self.assertTrue(creative_calls)
         self.assertNotIn("authorization_category", creative_calls[-1])
+
+
+class FallbackStateTests(unittest.TestCase):
+    def _build(self, fallback_state):
+        tmpdir = TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+
+        images_folder = Path(tmpdir.name) / "images"
+        images_folder.mkdir()
+        (images_folder / "fantasma.jpg").write_bytes(b"x")
+
+        excel_path = Path(tmpdir.name) / "planilha.xlsx"
+        pd.DataFrame(
+            [{
+                "city": "Cidade Fantasma",
+                "url": "https://exemplo.com",
+                "image": "fantasma.jpg",
+                "primary_text": "t",
+                "headline": "h",
+                "description": "d",
+            }]
+        ).to_excel(excel_path, index=False)
+
+        client = ClientConfig(
+            name="fallback",
+            campaign_id="CAMPANHA_1",
+            model_adset_id="MODEL_ID",
+            page_id="PAGE_1",
+            excel_file=str(excel_path),
+            images_folder=str(images_folder),
+            fallback_state=fallback_state,
+        )
+        graph = FakeGraph()
+        sync = CitySync(graph, client, ad_account_id="act_1", dry_run=False, state_dir=str(Path(tmpdir.name) / ".state"))
+        return graph, sync
+
+    def test_city_not_found_falls_back_to_state_targeting_when_configured(self):
+        graph, sync = self._build(fallback_state="São Paulo")
+
+        result = sync.sync()
+
+        self.assertEqual(result.cidades_nao_encontradas, [])
+        self.assertEqual(len(result.adsets_fallback_estado), 1)
+        self.assertEqual(result.adsets_fallback_estado[0]["city"], "Cidade Fantasma")
+
+        adset_calls = [data for path, data in graph.posts if path.endswith("/adsets")]
+        self.assertTrue(adset_calls)
+        targeting = json.loads(adset_calls[-1]["targeting"])
+        self.assertEqual(targeting["geo_locations"], {"regions": [{"key": "SP_STATE_KEY"}]})
+        self.assertNotIn("cities", targeting["geo_locations"])
+
+    def test_city_not_found_without_fallback_state_configured_is_reported_as_before(self):
+        graph, sync = self._build(fallback_state=None)
+
+        result = sync.sync()
+
+        self.assertEqual(result.cidades_nao_encontradas, ["Cidade Fantasma"])
+        self.assertEqual(result.adsets_fallback_estado, [])
+        self.assertEqual(graph.posts, [])
 
 
 class DryRunTests(unittest.TestCase):

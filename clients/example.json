@@ -7,5 +7,6 @@
   "excel_file": "C:/MetaAPI/<cliente>/planilha_atual.xlsx",
   "images_folder": "C:/MetaAPI/<cliente>/images",
   "authorization_category": null,
-  "ad_name": "01"
+  "ad_name": "01",
+  "fallback_state": null
 }
