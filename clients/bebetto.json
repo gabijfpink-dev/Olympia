@@ -1,11 +1,11 @@
 {
   "name": "bebetto",
   "campaign_id": "120248483984510133",
-  "model_adset_id": "",
-  "page_id": "",
+  "model_adset_id": "120248499425640133",
+  "page_id": "111696000214468",
   "instagram_actor_id": null,
   "excel_file": "C:/MetaAPI/Bebetto/bebetto_lote_2_pronto.xlsx",
   "images_folder": "C:/MetaAPI/Bebetto/images",
-  "authorization_category": null,
+  "authorization_category": "POLITICAL",
   "ad_name": "01"
 }
