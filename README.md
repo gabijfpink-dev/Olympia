@@ -1,4 +1,23 @@
-# Automação Meta Ads — Campanhas + Conjuntos de Anúncios + Anúncios
+# Automação Meta Ads
+
+Duas ferramentas complementares para o Meta Ads (Facebook/Instagram):
+
+- **[`meta_ads_automation/`](meta_ads_automation)** — cria uma campanha do
+  zero (Campanha → Conjunto de Anúncios → Anúncios) a partir de um JSON
+  único, com legendas, imagens e qualquer configuração que você enviar.
+  Veja detalhes abaixo.
+- **[`meta_ads_ops/`](meta_ads_ops/README.md)** — uso do dia a dia: preenche
+  cidades faltantes (adset + criativo + anúncio) numa campanha **que já
+  existe**, clonando um adset-modelo, a partir de uma planilha por cliente.
+  Cada cliente/campanha é um arquivo `clients/<nome>.json` explícito — sem
+  IDs hardcoded em script, sem risco de misturar campanhas de clientes
+  diferentes.
+
+O restante deste README cobre o `meta_ads_automation` (criação do zero). Para
+o fluxo operacional (adicionar cidades numa campanha existente), veja
+[`meta_ads_ops/README.md`](meta_ads_ops/README.md).
+
+---
 
 Script em Python que sobe, de uma vez só, a hierarquia completa no Meta Ads
 (Facebook/Instagram): **Campanha → Conjunto de Anúncios → Anúncios**, com

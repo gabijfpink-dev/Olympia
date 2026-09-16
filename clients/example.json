@@ -1,0 +1,11 @@
+{
+  "name": "nome-do-cliente",
+  "campaign_id": "ID_DA_CAMPANHA",
+  "model_adset_id": "ID_DO_ADSET_MODELO",
+  "page_id": "ID_DA_PAGINA_DO_FACEBOOK",
+  "instagram_actor_id": "ID_DA_CONTA_DO_INSTAGRAM_OU_NULL",
+  "excel_file": "C:/MetaAPI/<cliente>/planilha_atual.xlsx",
+  "images_folder": "C:/MetaAPI/<cliente>/images",
+  "authorization_category": null,
+  "ad_name": "01"
+}

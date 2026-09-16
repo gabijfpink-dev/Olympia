@@ -6,6 +6,7 @@ venv/
 *.egg-info/
 output/
 
-# scripts/config.py contém o access token real — nunca deve ser commitado.
-scripts/config.py
-scripts/*.xlsx
+# config.py contém o access token real — nunca deve ser commitado.
+config.py
+*.xlsx
+.state/
