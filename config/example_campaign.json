@@ -1,0 +1,74 @@
+{
+  "defaults": {
+    "page_id": "123456789012345",
+    "instagram_actor_id": "17841400000000000"
+  },
+  "campaigns": [
+    {
+      "name": "Campanha - Lançamento Setembro",
+      "objective": "OUTCOME_TRAFFIC",
+      "status": "PAUSED",
+      "special_ad_categories": [],
+      "settings": {
+        "buying_type": "AUCTION"
+      },
+      "ad_sets": [
+        {
+          "name": "Conjunto - Interesse Moda 25-45",
+          "status": "PAUSED",
+          "daily_budget": 5000,
+          "billing_event": "IMPRESSIONS",
+          "optimization_goal": "LINK_CLICKS",
+          "bid_amount": 150,
+          "start_time": "2026-09-20T09:00:00-0300",
+          "targeting": {
+            "geo_locations": {
+              "countries": ["BR"]
+            },
+            "age_min": 25,
+            "age_max": 45,
+            "genders": [1, 2],
+            "flexible_spec": [
+              {
+                "interests": [
+                  { "id": "6003107902433", "name": "Moda" }
+                ]
+              }
+            ],
+            "publisher_platforms": ["facebook", "instagram"]
+          },
+          "ads": [
+            {
+              "name": "Anúncio - Vestido Verão",
+              "status": "PAUSED",
+              "creative": {
+                "name": "Criativo - Vestido Verão",
+                "message": "Nova coleção de verão chegou! Peças exclusivas com até 30% off.",
+                "caption": "loja.com.br",
+                "headline": "Coleção Verão 2026",
+                "description": "Frete grátis para todo o Brasil em compras acima de R$199.",
+                "link": "https://loja.com.br/colecao-verao",
+                "image_path": "https://loja.com.br/imagens/vestido-verao.jpg",
+                "call_to_action_type": "SHOP_NOW"
+              }
+            },
+            {
+              "name": "Anúncio - Conjunto Praia",
+              "status": "PAUSED",
+              "creative": {
+                "name": "Criativo - Conjunto Praia",
+                "message": "Conjuntos de praia com estampas exclusivas. Compre agora!",
+                "caption": "loja.com.br",
+                "headline": "Conjuntos de Praia",
+                "description": "Novidades toda semana.",
+                "link": "https://loja.com.br/conjuntos-praia",
+                "image_path": "./assets/conjunto-praia.jpg",
+                "call_to_action_type": "SHOP_NOW"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
