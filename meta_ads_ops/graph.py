@@ -8,6 +8,7 @@ pararem por rate limit e outros continuarem tentando (e falhando) sem parar.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import requests
@@ -16,6 +17,13 @@ logger = logging.getLogger(__name__)
 
 RATE_LIMIT_CODES = {4, 17, 32, 613}
 RATE_LIMIT_SUBCODES = {2446079}
+
+# Falha de rede (timeout, conexão recusada/perdida) é diferente de rate limit
+# ou erro de negócio da API: costuma ser um soluço pontual da rede local ou
+# do lado da Meta, então vale tentar de novo sozinho antes de derrubar uma
+# execução inteira (importante em lotes de 100+ cidades, ~30min corridos).
+NETWORK_RETRY_ATTEMPTS = 3
+NETWORK_RETRY_DELAYS = (5, 15)  # segundos entre as tentativas 1->2 e 2->3
 
 
 class GraphError(RuntimeError):
@@ -71,27 +79,47 @@ class GraphClient:
         except ValueError as exc:
             raise GraphError({"message": f"Resposta inválida da API: {response.text[:500]}"}) from exc
 
+    def _send(self, send_once) -> requests.Response:
+        """Executa send_once() com retry para falhas de rede (não de negócio)."""
+        for tentativa in range(1, NETWORK_RETRY_ATTEMPTS + 1):
+            try:
+                return send_once()
+            except requests.exceptions.RequestException as exc:
+                if tentativa == NETWORK_RETRY_ATTEMPTS:
+                    raise GraphError(
+                        {"message": f"Falha de rede após {NETWORK_RETRY_ATTEMPTS} tentativas: {exc}"}
+                    ) from exc
+                atraso = NETWORK_RETRY_DELAYS[tentativa - 1]
+                logger.warning(
+                    "Falha de rede (tentativa %d/%d): %s — tentando de novo em %ds",
+                    tentativa, NETWORK_RETRY_ATTEMPTS, exc, atraso,
+                )
+                time.sleep(atraso)
+        raise AssertionError("inalcançável")  # loop sempre retorna ou levanta
+
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = dict(params or {})
         params["access_token"] = self.access_token
-        r = requests.get(f"{self.base_url}/{path}", params=params, timeout=self.timeout)
+        r = self._send(lambda: requests.get(f"{self.base_url}/{path}", params=params, timeout=self.timeout))
         return self._parse(r)
 
     def post(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         data = dict(data or {})
         data["access_token"] = self.access_token
-        r = requests.post(f"{self.base_url}/{path}", data=data, timeout=self.timeout)
+        r = self._send(lambda: requests.post(f"{self.base_url}/{path}", data=data, timeout=self.timeout))
         return self._parse(r)
 
     def post_image(self, path: str, file_path: str) -> dict[str, Any]:
-        with open(file_path, "rb") as fh:
-            r = requests.post(
-                f"{self.base_url}/{path}",
-                files={"filename": fh},
-                data={"access_token": self.access_token},
-                timeout=self.timeout,
-            )
-        return self._parse(r)
+        def enviar():
+            with open(file_path, "rb") as fh:
+                return requests.post(
+                    f"{self.base_url}/{path}",
+                    files={"filename": fh},
+                    data={"access_token": self.access_token},
+                    timeout=self.timeout,
+                )
+
+        return self._parse(self._send(enviar))
 
     def paginate(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         params = dict(params or {})
@@ -102,7 +130,8 @@ class GraphClient:
         items: list[dict[str, Any]] = []
 
         while url:
-            r = requests.get(url, params=params, timeout=self.timeout)
+            call_params = params
+            r = self._send(lambda: requests.get(url, params=call_params, timeout=self.timeout))
             data = self._parse(r)
             items.extend(data.get("data", []))
             url = data.get("paging", {}).get("next")

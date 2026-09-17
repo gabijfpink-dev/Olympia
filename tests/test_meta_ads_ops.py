@@ -2,12 +2,50 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pandas as pd
+import requests
 
 from meta_ads_ops.clients import ClientConfig, load_secrets
+from meta_ads_ops.graph import GraphClient, GraphError
 from meta_ads_ops.normalize import normalizar
 from meta_ads_ops.sync import CitySync
+
+
+class GraphClientRetryTests(unittest.TestCase):
+    def _fake_response(self, payload):
+        resp = requests.Response()
+        resp.status_code = 200
+        resp._content = json.dumps(payload).encode("utf-8")
+        return resp
+
+    @patch("meta_ads_ops.graph.time.sleep")
+    @patch("meta_ads_ops.graph.requests.get")
+    def test_retries_network_error_then_succeeds(self, mock_get, mock_sleep):
+        mock_get.side_effect = [
+            requests.exceptions.ConnectTimeout("timeout"),
+            self._fake_response({"id": "123"}),
+        ]
+
+        client = GraphClient("token", "v21.0")
+        result = client.get("123")
+
+        self.assertEqual(result, {"id": "123"})
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once()
+
+    @patch("meta_ads_ops.graph.time.sleep")
+    @patch("meta_ads_ops.graph.requests.get")
+    def test_gives_up_after_max_attempts(self, mock_get, mock_sleep):
+        mock_get.side_effect = requests.exceptions.ConnectTimeout("timeout")
+
+        client = GraphClient("token", "v21.0")
+
+        with self.assertRaises(GraphError):
+            client.get("123")
+
+        self.assertEqual(mock_get.call_count, 3)
 
 
 class LoadSecretsTests(unittest.TestCase):
