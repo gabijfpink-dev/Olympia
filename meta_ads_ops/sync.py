@@ -416,6 +416,7 @@ class CitySync:
                     if not self.dry_run:
                         self.graph.post(str(adset["id"]), {"status": "ACTIVE"})
                     adset["status"] = "ACTIVE"
+                    logger.info("Adset ativado: %s -> %s", cidade, adset["id"])
                     time.sleep(1)
 
                 ad = ads[0]
@@ -424,9 +425,11 @@ class CitySync:
                         self.graph.post(str(ad["id"]), {"status": "ACTIVE"})
                     ad["status"] = "ACTIVE"
                     result.ads_criados.append({"city": cidade, "ad_id": ad["id"], "acao": "ativado"})
+                    logger.info("Anúncio ativado: %s -> %s", cidade, ad["id"])
                     time.sleep(1)
                 else:
                     result.ja_prontos.append(cidade)
+                    logger.info("Já estava ativo: %s", cidade)
 
             except GraphError as exc:
                 logger.error("Erro ativando %s: %s", cidade, exc)
