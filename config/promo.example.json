@@ -1,0 +1,26 @@
+{
+  "name": "minhas-promocoes",
+  "telegram_channels": [
+    "@nome_do_grupo_1",
+    "@nome_do_grupo_2"
+  ],
+  "allowed_stores": ["amazon", "shopee", "shein", "mercadolivre"],
+  "keywords_include": [],
+  "keywords_exclude": ["esgotado", "encerrada", "encerrado"],
+  "review_chat": "me",
+  "output_log": "output/promos.jsonl",
+  "affiliates": {
+    "amazon": {
+      "params": { "tag": "SEU-TAG-AMAZON-20" }
+    },
+    "mercadolivre": {
+      "params": { "matt_word": "SEU_MATT_WORD", "matt_tool": "SEU_MATT_TOOL" }
+    },
+    "shopee": {
+      "template": "https://sua-rede-de-afiliados.com/redirect?url={url}&aff_id=SEU_ID"
+    },
+    "shein": {
+      "template": "https://sua-rede-de-afiliados.com/redirect?url={url}&aff_id=SEU_ID"
+    }
+  }
+}

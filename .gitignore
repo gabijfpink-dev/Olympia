@@ -10,3 +10,7 @@ output/
 config.py
 *.xlsx
 .state/
+
+# Sessao logada do Telegram (promo_bot) - equivale a uma credencial, nunca commitar.
+*.session
+*.session-journal

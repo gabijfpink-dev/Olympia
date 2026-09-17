@@ -1,6 +1,6 @@
 # Automação Meta Ads
 
-Duas ferramentas complementares para o Meta Ads (Facebook/Instagram):
+Três ferramentas complementares:
 
 - **[`meta_ads_automation/`](meta_ads_automation)** — cria uma campanha do
   zero (Campanha → Conjunto de Anúncios → Anúncios) a partir de um JSON
@@ -12,6 +12,10 @@ Duas ferramentas complementares para o Meta Ads (Facebook/Instagram):
   Cada cliente/campanha é um arquivo `clients/<nome>.json` explícito — sem
   IDs hardcoded em script, sem risco de misturar campanhas de clientes
   diferentes.
+- **[`promo_bot/`](promo_bot/README.md)** — captura promoções (Amazon,
+  Shopee, Shein, Mercado Livre, ...) de grupos do Telegram ou de qualquer
+  texto colado, converte o link para o seu link de afiliada e já gera
+  legenda + roteiro de vídeo prontos para postar.
 
 O restante deste README cobre o `meta_ads_automation` (criação do zero). Para
 o fluxo operacional (adicionar cidades numa campanha existente), veja
