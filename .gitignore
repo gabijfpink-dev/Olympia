@@ -7,7 +7,9 @@ venv/
 output/
 
 # config.py contém o access token real — nunca deve ser commitado.
-config.py
+# (só o da raiz: sem a barra, esse padrão também escondia promo_bot/config.py,
+# que é código normal do projeto, não segredo.)
+/config.py
 *.xlsx
 .state/
 
