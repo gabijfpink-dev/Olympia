@@ -9,6 +9,8 @@
   "keywords_exclude": ["esgotado", "encerrada", "encerrado"],
   "review_chat": "me",
   "output_log": "output/promos.jsonl",
+  "whatsapp_groups": ["Nome do Grupo de Ofertas"],
+  "whatsapp_session_dir": "whatsapp_session",
   "affiliates": {
     "amazon": {
       "params": { "tag": "SEU-TAG-AMAZON-20" }

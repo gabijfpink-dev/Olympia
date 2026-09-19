@@ -16,3 +16,6 @@ output/
 # Sessao logada do Telegram (promo_bot) - equivale a uma credencial, nunca commitar.
 *.session
 *.session-journal
+
+# Sessao logada do WhatsApp Web (promo_bot/whatsapp_publisher.py) - idem.
+whatsapp_session/

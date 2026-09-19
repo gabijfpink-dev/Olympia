@@ -7,9 +7,10 @@ from promo_bot.affiliate import AffiliateRuleMissingError, build_affiliate_link
 from promo_bot.caption_generator import Promo, generate_caption, generate_script
 from promo_bot.config import AffiliateRule, MonitorConfig, load_monitor_config
 from promo_bot.link_extractor import extract_urls
-from promo_bot.pipeline import process_message
+from promo_bot.pipeline import PromoResult, process_message
 from promo_bot.price_extractor import extract_price_info
 from promo_bot.stores import detect_store
+from promo_bot.whatsapp_publisher import format_whatsapp_message
 
 
 class LinkExtractorTests(unittest.TestCase):
@@ -213,6 +214,21 @@ class ProcessMessageTests(unittest.TestCase):
         results = process_message(text, self._config(), seed=1)
         stores = sorted(r.store for r in results)
         self.assertEqual(stores, ["amazon", "shopee"])
+
+
+class WhatsAppMessageFormatTests(unittest.TestCase):
+    def test_format_uses_caption_only_not_script(self):
+        result = PromoResult(
+            store="amazon",
+            original_url="https://amazon.com.br/dp/XYZ",
+            affiliate_link="https://amazon.com.br/dp/XYZ?tag=x-20",
+            caption="🔥 Legenda pronta\nhttps://amazon.com.br/dp/XYZ?tag=x-20",
+            script="[GANCHO - 0-3s]\nroteiro que não deve ir pro WhatsApp",
+            source_text="texto original",
+        )
+        message = format_whatsapp_message(result)
+        self.assertEqual(message, result.caption)
+        self.assertNotIn("[GANCHO", message)
 
 
 if __name__ == "__main__":

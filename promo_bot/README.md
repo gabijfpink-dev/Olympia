@@ -17,8 +17,9 @@ e já monta a legenda e um roteiro curto de vídeo.
    (`caption_generator.py`), usando preço/desconto extraídos do próprio texto
    quando presentes (`price_extractor.py`).
 5. **Salva tudo** num log local (`output/promos.jsonl`) e, se configurado,
-   **envia para um chat de revisão no Telegram** antes de você postar de
-   verdade — o bot nunca posta sozinho num canal público.
+   **envia para um chat de revisão no Telegram** e/ou **posta direto em
+   grupos do WhatsApp** (`whatsapp_publisher.py`) via automação do WhatsApp
+   Web — veja o aviso de risco na seção 3.
 
 ## O que ele **não** faz (e por quê)
 
@@ -125,6 +126,43 @@ Modo contínuo (escuta os grupos/canais configurados e manda pra revisão):
 python -m promo_bot.cli --config config/minhas-promocoes.json --listen
 ```
 
+## 3.1 Envio automático para grupos do WhatsApp (opcional)
+
+> ⚠️ **Isso não é a API oficial do WhatsApp Business.** É automação de
+> navegador sobre o WhatsApp Web comum (mesmo princípio de ferramentas tipo
+> `whatsapp-web.js`). O WhatsApp pode restringir ou banir um número que ele
+> identifique como bot — mitigamos com um delay aleatório entre cada envio,
+> mas o risco nunca é zero. **Recomendação: use um número secundário, não o
+> seu principal**, pelo menos enquanto estiver validando.
+
+Instale o Playwright (além do resto do `requirements.txt`):
+
+```bash
+pip install playwright
+playwright install chromium
+```
+
+No config, adicione os grupos de destino:
+
+```jsonc
+{
+  ...
+  "whatsapp_groups": ["Nome do Grupo de Ofertas"],
+  "whatsapp_session_dir": "whatsapp_session"
+}
+```
+
+Ao rodar `--listen` com `whatsapp_groups` preenchido, um navegador abre
+automaticamente (não headless, de propósito, pra você poder ver e escanear o
+QR code do WhatsApp Web na primeira vez). Depois disso a sessão fica salva
+em `whatsapp_session/` (nunca commitar essa pasta — equivale a estar logada).
+Cada promoção detectada é enviada para todos os grupos da lista, com um
+intervalo aleatório entre 8 e 25 segundos entre cada envio.
+
+Os nomes em `whatsapp_groups` precisam ser **exatamente iguais** ao nome do
+grupo como aparece no seu WhatsApp (é usado pra buscar o grupo na caixa de
+pesquisa).
+
 ## 4. Testes
 
 ```bash
@@ -146,6 +184,7 @@ promo_bot/
   config.py              -> carrega config JSON + segredos do Telegram (.env)
   pipeline.py            -> junta tudo: texto -> promoções prontas
   publisher.py           -> salva em log local / envia pro chat de revisão
+  whatsapp_publisher.py -> envia a legenda pronta pra grupos do WhatsApp (via WhatsApp Web)
   telegram_listener.py  -> conecta no Telegram e chama o pipeline a cada mensagem
   cli.py                 -> ponto de entrada (--texto para teste, --listen para produção)
 config/

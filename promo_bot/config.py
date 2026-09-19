@@ -43,6 +43,8 @@ class MonitorConfig:
     keywords_exclude: list[str] = field(default_factory=list)
     review_chat: str | None = None
     output_log: str = "output/promos.jsonl"
+    whatsapp_groups: list[str] = field(default_factory=list)
+    whatsapp_session_dir: str = "whatsapp_session"
 
 
 REQUIRED_FIELDS = ["name", "telegram_channels", "allowed_stores", "affiliates"]
@@ -69,6 +71,8 @@ def load_monitor_config(path: str) -> MonitorConfig:
         keywords_exclude=[k.lower() for k in data.get("keywords_exclude", [])],
         review_chat=data.get("review_chat") or None,
         output_log=data.get("output_log", "output/promos.jsonl"),
+        whatsapp_groups=list(data.get("whatsapp_groups", [])),
+        whatsapp_session_dir=data.get("whatsapp_session_dir", "whatsapp_session"),
     )
 
 
