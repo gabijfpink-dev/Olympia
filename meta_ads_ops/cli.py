@@ -26,6 +26,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", default="config.py", help="Caminho do config.py com as credenciais (padrão: ./config.py)")
     parser.add_argument("--dry-run", action="store_true", help="Não chama a API de verdade, só simula")
     parser.add_argument("--output", default=None, help="Salva o resumo em JSON nesse caminho")
+    parser.add_argument(
+        "--adset-suffix", default="",
+        help="Sufixo pro nome do adset/anúncio (ex.: ' - Aumento'), pra criar um SEGUNDO "
+        "adset numa cidade que já tem um, sem colidir com o existente. A busca de "
+        "geolocalização continua usando o nome puro da cidade.",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -51,7 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     graph = GraphClient(secrets.access_token, secrets.api_version)
-    sync = CitySync(graph, client, secrets.ad_account_id, dry_run=args.dry_run)
+    sync = CitySync(
+        graph, client, secrets.ad_account_id, dry_run=args.dry_run, adset_suffix=args.adset_suffix,
+    )
 
     try:
         result = sync.sync() if args.action == "sync" else sync.activate()

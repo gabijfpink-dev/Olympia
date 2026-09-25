@@ -109,7 +109,10 @@ class FakeGraph:
         }
         self.adsets = [{"id": "ADSET_EXISTENTE", "name": "Cidade Pronta", "status": "PAUSED"}]
         self.ads = [{"id": "AD_1", "name": "01", "status": "PAUSED", "adset_id": "ADSET_EXISTENTE"}]
-        self.search_results = {"cidade nova": {"key": "111", "name": "Cidade Nova", "region": "Sao Paulo", "country_code": "BR"}}
+        self.search_results = {
+            "cidade nova": {"key": "111", "name": "Cidade Nova", "region": "Sao Paulo", "country_code": "BR"},
+            "cidade pronta": {"key": "222", "name": "Cidade Pronta", "region": "Sao Paulo", "country_code": "BR"},
+        }
         self.state_results = {"sao paulo": {"key": "SP_STATE_KEY", "name": "São Paulo", "country_code": "BR"}}
 
     def get(self, path, params=None):
@@ -134,11 +137,26 @@ class FakeGraph:
     def post(self, path, data=None):
         self.posts.append((path, data))
         if path.endswith("/adsets"):
+            self.adsets.append({"id": "ADSET_NOVO", "name": data.get("name"), "status": "PAUSED"})
             return {"id": "ADSET_NOVO"}
         if path.endswith("/adcreatives"):
             return {"id": "CREATIVE_NOVO"}
         if path.endswith("/ads"):
+            self.ads.append({
+                "id": "AD_NOVO", "name": data.get("name"),
+                "status": data.get("status", "PAUSED"), "adset_id": data.get("adset_id"),
+            })
             return {"id": "AD_NOVO"}
+        # Atualização de status (usado pelo activate): reflete no adset/anúncio
+        # correspondente pra uma chamada de activate() logo depois enxergar o estado novo.
+        for adset in self.adsets:
+            if adset["id"] == path:
+                adset["status"] = data.get("status", adset["status"])
+                return {"success": True}
+        for ad in self.ads:
+            if ad["id"] == path:
+                ad["status"] = data.get("status", ad["status"])
+                return {"success": True}
         return {"success": True}
 
     def post_image(self, path, file_path):
@@ -242,6 +260,71 @@ class CitySyncTests(unittest.TestCase):
         creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
         self.assertTrue(creative_calls)
         self.assertNotIn("authorization_category", creative_calls[-1])
+
+
+class AdsetSuffixTests(unittest.TestCase):
+    """--adset-suffix: criar um SEGUNDO adset numa cidade que já tem um
+    (ex.: aumento de investimento), sem colidir com o nome existente."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        images_folder = Path(self.tmpdir.name) / "images"
+        images_folder.mkdir()
+        (images_folder / "cidade-pronta-v2.jpg").write_bytes(b"fake-image-bytes")
+
+        excel_path = Path(self.tmpdir.name) / "planilha.xlsx"
+        pd.DataFrame(
+            [{
+                "city": "Cidade Pronta",
+                "url": "https://exemplo.com",
+                "image": "cidade-pronta-v2.jpg",
+                "primary_text": "Texto novo",
+                "headline": "Título novo",
+                "description": "Descrição nova",
+            }]
+        ).to_excel(excel_path, index=False)
+
+        client = ClientConfig(
+            name="teste-sufixo",
+            campaign_id="CAMPANHA_1",
+            model_adset_id="MODEL_ID",
+            page_id="PAGE_1",
+            excel_file=str(excel_path),
+            images_folder=str(images_folder),
+        )
+        self.graph = FakeGraph()
+        self.sync = CitySync(
+            self.graph, client, ad_account_id="act_1", dry_run=False,
+            state_dir=str(Path(self.tmpdir.name) / ".state"),
+            adset_suffix=" - Aumento",
+        )
+
+    def test_creates_second_adset_instead_of_skipping_city_that_already_has_one(self):
+        result = self.sync.sync()
+
+        self.assertEqual(result.ja_prontos, [])
+        self.assertEqual(len(result.adsets_criados), 1)
+        self.assertEqual(result.adsets_criados[0]["city"], "Cidade Pronta - Aumento")
+        self.assertEqual(len(result.ads_criados), 1)
+        self.assertEqual(result.ads_criados[0]["city"], "Cidade Pronta - Aumento")
+
+        adset_calls = [data for path, data in self.graph.posts if path.endswith("/adsets")]
+        self.assertEqual(adset_calls[-1]["name"], "Cidade Pronta - Aumento")
+
+    def test_geo_search_uses_plain_city_name_not_the_suffixed_one(self):
+        with patch.object(self.sync, "search_city", wraps=self.sync.search_city) as spy:
+            self.sync.sync()
+        spy.assert_called_once_with("Cidade Pronta")
+
+    def test_activate_matches_the_suffixed_adset_too(self):
+        self.sync.sync()
+        result = self.sync.activate()
+
+        self.assertEqual(result.erros, [])
+        ativados = [c["city"] for c in result.ads_criados]
+        self.assertIn("Cidade Pronta - Aumento", ativados)
 
 
 class FallbackStateTests(unittest.TestCase):

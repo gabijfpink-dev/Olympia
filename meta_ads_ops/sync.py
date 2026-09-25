@@ -64,11 +64,17 @@ class CitySync:
         ad_account_id: str,
         dry_run: bool = False,
         state_dir: str = ".state",
+        adset_suffix: str = "",
     ):
         self.graph = graph
         self.client = client
         self.ad_account_id = ad_account_id
         self.dry_run = dry_run
+        # Permite criar um SEGUNDO adset pra uma cidade que já tem um (ex.:
+        # aumento de investimento) sem colidir com o nome existente — o
+        # sufixo entra só no nome do adset/anúncio, nunca na busca de
+        # geolocalização (que precisa do nome real da cidade).
+        self.adset_suffix = adset_suffix
         self._image_cache_path = Path(state_dir) / f"{client.name}_image_hashes.json"
         self._image_cache = self._load_image_cache()
         self._dry_run_counter = 0
@@ -318,7 +324,8 @@ class CitySync:
 
         for _, row in df.iterrows():
             cidade = str(row["city"]).strip()
-            chave = normalizar(cidade)
+            nome_adset = f"{cidade}{self.adset_suffix}"
+            chave = normalizar(nome_adset)
 
             try:
                 adset = existing_adsets.get(chave)
@@ -349,40 +356,40 @@ class CitySync:
                         result.cidades_nao_encontradas.append(cidade)
                         continue
 
-                    params = self._clone_adset_params(modelo, cidade, geo_locations)
+                    params = self._clone_adset_params(modelo, nome_adset, geo_locations)
                     criado = self._create_adset(params)
-                    adset = {"id": criado["id"], "name": cidade, "status": "PAUSED"}
+                    adset = {"id": criado["id"], "name": nome_adset, "status": "PAUSED"}
                     existing_adsets[chave] = adset
                     ads_by_adset.setdefault(str(adset["id"]), [])
-                    result.adsets_criados.append({"city": cidade, "adset_id": adset["id"]})
+                    result.adsets_criados.append({"city": nome_adset, "adset_id": adset["id"]})
                     if usou_fallback_estado:
-                        result.adsets_fallback_estado.append({"city": cidade, "adset_id": adset["id"]})
-                    logger.info("Adset criado: %s -> %s", cidade, adset["id"])
+                        result.adsets_fallback_estado.append({"city": nome_adset, "adset_id": adset["id"]})
+                    logger.info("Adset criado: %s -> %s", nome_adset, adset["id"])
                     time.sleep(1)
 
                 if ads_by_adset.get(str(adset["id"])):
-                    result.ja_prontos.append(cidade)
+                    result.ja_prontos.append(nome_adset)
                     continue
 
                 image_hash = self.resolve_image_hash(str(row["image"]).strip())
                 if not image_hash:
-                    result.erros.append({"city": cidade, "step": "image", "error": "imagem/hash ausente"})
+                    result.erros.append({"city": nome_adset, "step": "image", "error": "imagem/hash ausente"})
                     continue
 
-                creative = self._create_creative(cidade, row, image_hash)
+                creative = self._create_creative(nome_adset, row, image_hash)
                 ad = self._create_ad(adset["id"], creative["id"])
 
                 ads_by_adset.setdefault(str(adset["id"]), []).append(ad)
                 result.ads_criados.append(
-                    {"city": cidade, "adset_id": adset["id"], "creative_id": creative["id"], "ad_id": ad["id"]}
+                    {"city": nome_adset, "adset_id": adset["id"], "creative_id": creative["id"], "ad_id": ad["id"]}
                 )
-                logger.info("Anúncio criado: %s -> %s", cidade, ad["id"])
+                logger.info("Anúncio criado: %s -> %s", nome_adset, ad["id"])
                 time.sleep(0.35)
 
             except GraphError as exc:
-                logger.error("Erro na cidade %s: %s", cidade, exc)
+                logger.error("Erro na cidade %s: %s", nome_adset, exc)
                 logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
-                result.erros.append({"city": cidade, "error": str(exc), "raw": exc.error})
+                result.erros.append({"city": nome_adset, "error": str(exc), "raw": exc.error})
 
         return result
 
@@ -399,16 +406,17 @@ class CitySync:
 
         for _, row in df.iterrows():
             cidade = str(row["city"]).strip()
-            chave = normalizar(cidade)
+            nome_adset = f"{cidade}{self.adset_suffix}"
+            chave = normalizar(nome_adset)
 
             adset = existing_adsets.get(chave)
             if adset is None:
-                result.erros.append({"city": cidade, "step": "adset", "error": "adset não existe ainda"})
+                result.erros.append({"city": nome_adset, "step": "adset", "error": "adset não existe ainda"})
                 continue
 
             ads = ads_by_adset.get(str(adset["id"]), [])
             if not ads:
-                result.erros.append({"city": cidade, "step": "ad", "error": "anúncio não existe ainda"})
+                result.erros.append({"city": nome_adset, "step": "ad", "error": "anúncio não existe ainda"})
                 continue
 
             try:
@@ -416,7 +424,7 @@ class CitySync:
                     if not self.dry_run:
                         self.graph.post(str(adset["id"]), {"status": "ACTIVE"})
                     adset["status"] = "ACTIVE"
-                    logger.info("Adset ativado: %s -> %s", cidade, adset["id"])
+                    logger.info("Adset ativado: %s -> %s", nome_adset, adset["id"])
                     time.sleep(1)
 
                 ad = ads[0]
@@ -424,16 +432,16 @@ class CitySync:
                     if not self.dry_run:
                         self.graph.post(str(ad["id"]), {"status": "ACTIVE"})
                     ad["status"] = "ACTIVE"
-                    result.ads_criados.append({"city": cidade, "ad_id": ad["id"], "acao": "ativado"})
-                    logger.info("Anúncio ativado: %s -> %s", cidade, ad["id"])
+                    result.ads_criados.append({"city": nome_adset, "ad_id": ad["id"], "acao": "ativado"})
+                    logger.info("Anúncio ativado: %s -> %s", nome_adset, ad["id"])
                     time.sleep(1)
                 else:
-                    result.ja_prontos.append(cidade)
-                    logger.info("Já estava ativo: %s", cidade)
+                    result.ja_prontos.append(nome_adset)
+                    logger.info("Já estava ativo: %s", nome_adset)
 
             except GraphError as exc:
-                logger.error("Erro ativando %s: %s", cidade, exc)
+                logger.error("Erro ativando %s: %s", nome_adset, exc)
                 logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
-                result.erros.append({"city": cidade, "error": str(exc), "raw": exc.error})
+                result.erros.append({"city": nome_adset, "error": str(exc), "raw": exc.error})
 
         return result

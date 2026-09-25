@@ -70,6 +70,25 @@ ambíguo, mais de uma cidade com o mesmo nome em estados diferentes etc.):
   cidade. Essas cidades aparecem separadas em `adsets_fallback_estado` no
   resumo, para você revisar o targeting delas depois se quiser refinar.
 
+## Aumentar investimento numa cidade que já está rodando
+
+Pra criar um **segundo** conjunto de anúncios numa cidade que já tem um
+(ex.: aumentar o investimento, ou testar um criativo novo em paralelo sem
+mexer no que já está rodando), use `--adset-suffix`:
+
+```bash
+python -m meta_ads_ops.cli sync --client clients/bebetto.json \
+    --adset-suffix " - Aumento" --output resultado_aumento.json
+python -m meta_ads_ops.cli activate --client clients/bebetto.json \
+    --adset-suffix " - Aumento" --output resultado_aumento_activate.json
+```
+
+O nome do novo adset vira `"<Cidade> - Aumento"` (não colide com o adset
+original), mas a busca de geolocalização continua usando o nome puro da
+cidade da planilha. Use uma planilha separada (pode ter as mesmas cidades,
+com imagem/texto novos) e passe o mesmo `--adset-suffix` no `sync` e no
+`activate` pra apontar sempre pro mesmo conjunto de adsets "extras".
+
 ## Anúncios/campanhas comerciais vs. eleitorais
 
 `authorization_category` no `clients/<nome>.json` só deve ser `"POLITICAL"`
