@@ -1,0 +1,13 @@
+{
+  "name": "rui-falcao",
+  "campaign_id": "120251480796640034",
+  "model_adset_id": "120251480796630034",
+  "page_id": "127139487368866",
+  "instagram_actor_id": null,
+  "excel_file": "C:/MetaAPI/RuiFalcao/rui_falcao_lote_1.xlsx",
+  "images_folder": "C:/MetaAPI/RuiFalcao/Imagens",
+  "authorization_category": "POLITICAL",
+  "ad_name": "01",
+  "fallback_state": "São Paulo",
+  "creative_type": "carousel"
+}
