@@ -162,6 +162,8 @@ class FakeGraph:
         for ad in self.ads:
             if ad["id"] == path:
                 ad["status"] = data.get("status", ad["status"])
+                if "creative" in data:
+                    ad["creative"] = data["creative"]
                 return {"success": True}
         return {"success": True}
 
@@ -269,6 +271,92 @@ class CitySyncTests(unittest.TestCase):
         creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
         self.assertTrue(creative_calls)
         self.assertNotIn("authorization_category", creative_calls[-1])
+
+
+class UpdateCreativeTests(unittest.TestCase):
+    """update_creatives(): corrige o criativo (ex.: link errado) de cidades
+    que JÁ têm anúncio, sem criar adset/anúncio novo."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        images_folder = Path(self.tmpdir.name) / "images"
+        images_folder.mkdir()
+        (images_folder / "cidade-pronta.jpg").write_bytes(b"fake-image-bytes")
+
+        excel_path = Path(self.tmpdir.name) / "planilha.xlsx"
+        pd.DataFrame(
+            [
+                {
+                    "city": "Cidade Pronta",
+                    "url": "https://exemplo.com/link-certo",
+                    "image": "cidade-pronta.jpg",
+                    "primary_text": "Texto",
+                    "headline": "Título",
+                    "description": "Descrição",
+                },
+                {
+                    "city": "Cidade Sem Anuncio Ainda",
+                    "url": "https://exemplo.com/link-certo",
+                    "image": "cidade-pronta.jpg",
+                    "primary_text": "Texto",
+                    "headline": "Título",
+                    "description": "Descrição",
+                },
+            ]
+        ).to_excel(excel_path, index=False)
+
+        self.client = ClientConfig(
+            name="teste",
+            campaign_id="CAMPANHA_1",
+            model_adset_id="MODEL_ID",
+            page_id="PAGE_1",
+            excel_file=str(excel_path),
+            images_folder=str(images_folder),
+        )
+        self.graph = FakeGraph()
+        self.sync = CitySync(
+            self.graph, self.client, ad_account_id="act_1", dry_run=False,
+            state_dir=str(Path(self.tmpdir.name) / ".state"),
+        )
+
+    def test_rebuilds_creative_with_current_row_and_swaps_ad_reference(self):
+        result = self.sync.update_creatives()
+
+        creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
+        self.assertEqual(len(creative_calls), 1)
+        spec = json.loads(creative_calls[-1]["object_story_spec"])
+        self.assertEqual(spec["link_data"]["link"], "https://exemplo.com/link-certo")
+
+        ad = next(a for a in self.graph.ads if a["id"] == "AD_1")
+        self.assertEqual(json.loads(ad["creative"]), {"creative_id": "CREATIVE_NOVO"})
+
+        self.assertEqual(len(result.ads_criados), 1)
+        atualizado = result.ads_criados[0]
+        self.assertEqual(atualizado["city"], "Cidade Pronta")
+        self.assertEqual(atualizado["ad_id"], "AD_1")
+        self.assertEqual(atualizado["acao"], "criativo_atualizado")
+        self.assertEqual(result.erros, [])
+
+    def test_does_not_create_adset_or_ad_for_city_without_one_yet(self):
+        result = self.sync.update_creatives()
+
+        self.assertIn("Cidade Sem Anuncio Ainda", result.cidades_nao_encontradas)
+        adset_calls = [data for path, data in self.graph.posts if path.endswith("/adsets")]
+        ad_calls = [data for path, data in self.graph.posts if path.endswith("/ads")]
+        self.assertEqual(adset_calls, [])
+        self.assertEqual(ad_calls, [])
+
+    def test_dry_run_does_not_post_creative_swap(self):
+        sync = CitySync(
+            self.graph, self.client, ad_account_id="act_1", dry_run=True,
+            state_dir=str(Path(self.tmpdir.name) / ".state-dry"),
+        )
+        sync.update_creatives()
+
+        ad = next(a for a in self.graph.ads if a["id"] == "AD_1")
+        self.assertNotIn("creative", ad)
 
 
 class AdsetSuffixTests(unittest.TestCase):

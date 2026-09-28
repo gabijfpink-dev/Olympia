@@ -6,6 +6,12 @@ Uso:
     python -m meta_ads_ops.cli sync --client clients/bebetto.json
     python -m meta_ads_ops.cli activate --client clients/bebetto.json
 
+Pra corrigir o criativo (ex.: link errado) de cidades que JÁ têm anúncio
+criado, sem mexer em adset/imagem de progresso/status — atualize a planilha
+com o dado certo (ex.: coluna "url") e rode:
+    python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json --dry-run
+    python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json
+
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json
@@ -35,8 +41,10 @@ from .sync import CampaignBootstrapper, CitySync, _buscar_cidade
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "action", choices=["sync", "activate", "bootstrap", "geocheck", "instacheck"],
+        "action", choices=["sync", "activate", "update-creative", "bootstrap", "geocheck", "instacheck"],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
+        "update-creative: recria o criativo (link/texto/imagem) de cidades já com anúncio, a "
+        "partir dos dados atuais da planilha, e troca a referência do anúncio pro criativo novo. "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
         "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
@@ -232,7 +240,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        result = sync.sync() if args.action == "sync" else sync.activate()
+        if args.action == "sync":
+            result = sync.sync()
+        elif args.action == "activate":
+            result = sync.activate()
+        else:
+            result = sync.update_creatives()
     except Exception as exc:  # noqa: BLE001 - qualquer falha de execução deve ser reportada, não engolida
         logger.error("Execução interrompida: %s", exc)
         return 1

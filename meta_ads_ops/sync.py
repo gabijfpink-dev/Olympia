@@ -506,6 +506,63 @@ class CitySync:
 
         return result
 
+    def update_creatives(self) -> SyncResult:
+        """Recria o criativo de cada cidade da planilha com os dados ATUAIS da
+        linha (ex.: link corrigido, texto revisado) e troca a referência do
+        anúncio já existente pro criativo novo — sem mexer em adset, imagem
+        de progresso ou status. Não cria adset/anúncio novo: cidade sem
+        anúncio ainda é só reportada (rode 'sync' primeiro pra ela)."""
+        result = SyncResult()
+
+        df = self.load_spreadsheet()
+        existing_adsets = self.list_existing_adsets()
+        ads_by_adset = self.list_ads_by_adset()
+
+        for _, row in df.iterrows():
+            cidade = str(row["city"]).strip()
+            nome_adset = f"{cidade}{self.adset_suffix}"
+            chave = normalizar(nome_adset)
+
+            adset = existing_adsets.get(chave)
+            if adset is None:
+                result.cidades_nao_encontradas.append(nome_adset)
+                continue
+
+            ads = ads_by_adset.get(str(adset["id"]), [])
+            if not ads:
+                result.cidades_nao_encontradas.append(nome_adset)
+                continue
+
+            try:
+                creative, erro_imagem = self._build_creative(nome_adset, row)
+                if erro_imagem:
+                    result.erros.append({"city": nome_adset, "step": "image", "error": erro_imagem})
+                    continue
+
+                ad = ads[0]
+                if not self.dry_run:
+                    self.graph.post(str(ad["id"]), {"creative": json.dumps({"creative_id": creative["id"]})})
+                result.ads_criados.append(
+                    {
+                        "city": nome_adset,
+                        "ad_id": ad["id"],
+                        "creative_id": creative["id"],
+                        "acao": "criativo_atualizado",
+                    }
+                )
+                logger.info(
+                    "Criativo atualizado: %s -> anúncio %s agora usa criativo %s",
+                    nome_adset, ad["id"], creative["id"],
+                )
+                time.sleep(0.35)
+
+            except GraphError as exc:
+                logger.error("Erro atualizando criativo de %s: %s", nome_adset, exc)
+                logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+                result.erros.append({"city": nome_adset, "error": str(exc), "raw": exc.error})
+
+        return result
+
     def activate(self) -> SyncResult:
         """Ativa (status ACTIVE) o adset e o anúncio de cada cidade da planilha
         que ainda não estiverem ativos. Único passo que efetivamente coloca

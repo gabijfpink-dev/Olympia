@@ -55,6 +55,21 @@ python -m meta_ads_ops.cli activate --client clients/bebetto.json
 Rodar `sync` de novo é seguro: cidade que já tem adset e anúncio é
 automaticamente pulada (checado ao vivo na API, não em arquivo local).
 
+## Corrigir criativo (ex.: link errado) de cidades já no ar
+
+`sync` só cria o que falta — cidade que já tem anúncio é pulada, mesmo que o
+link/texto da planilha tenha mudado. Pra corrigir o link (ou texto/imagem) de
+cidades que JÁ têm anúncio, sem mexer em adset nem em status: atualize a
+coluna correspondente na planilha (ex.: `url`) e rode `update-creative`. Ele
+recria o criativo com os dados atuais da linha e troca a referência do
+anúncio existente pro criativo novo — cidade sem anúncio ainda é só reportada
+em `cidades_nao_encontradas` (rode `sync` pra ela primeiro).
+
+```bash
+python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json --dry-run
+python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json
+```
+
 ## Criativo em carrossel (2 cartões)
 
 Por padrão o criativo é de imagem única. Pra criativo em carrossel de 2
