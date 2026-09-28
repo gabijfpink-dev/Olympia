@@ -8,5 +8,7 @@
   "images_folder": "C:/MetaAPI/Leandro_Grass/Imagens",
   "authorization_category": "POLITICAL",
   "ad_name": "01",
-  "fallback_state": "Federal District"
+  "fallback_state": "Federal District",
+  "preferred_region": "Federal District",
+  "geo_location_types": ["city", "neighborhood"]
 }

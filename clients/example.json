@@ -8,5 +8,7 @@
   "images_folder": "C:/MetaAPI/<cliente>/images",
   "authorization_category": null,
   "ad_name": "01",
-  "fallback_state": null
+  "fallback_state": null,
+  "preferred_region": null,
+  "geo_location_types": null
 }

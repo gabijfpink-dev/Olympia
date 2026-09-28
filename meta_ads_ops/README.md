@@ -70,6 +70,25 @@ ambíguo, mais de uma cidade com o mesmo nome em estados diferentes etc.):
   cidade. Essas cidades aparecem separadas em `adsets_fallback_estado` no
   resumo, para você revisar o targeting delas depois se quiser refinar.
 
+## Capital/DF, cidade homônima em outro estado, bairro em vez de cidade
+
+Três ajustes pra campanhas fora do padrão "cidade única em SP" do Bebetto,
+configuráveis em `clients/<nome>.json`:
+
+- **`geo_location_types`** (ex.: `["city", "neighborhood"]`): por padrão a
+  busca só considera `city`. Em capitais como Brasília, a cidade é uma só
+  (Brasília/DF) e as regiões administrativas (Taguatinga, Ceilândia...) são
+  cadastradas como **bairro** — sem isso, nada seria encontrado.
+- **`preferred_region`** (ex.: `"Federal District"`): existem cidades
+  homônimas em estados diferentes (ex.: "Sobradinho" existe no DF *e* na
+  Bahia). Com isso configurado, um resultado só é aceito se a região bater
+  — sem essa trava, um "único resultado exato" podia vir do estado errado
+  silenciosamente.
+- Use `python -m meta_ads_ops.cli geocheck --config config.py --names "A,B,C" --preferred-region "Federal District"`
+  pra testar rapidamente se uma lista de nomes existe na base da Meta
+  **antes** de montar a planilha inteira — evita descobrir tarde que a
+  segmentação granular por região não existe (foi o caso do "Plano Piloto").
+
 ## Conta nova, sem campanha ainda (bootstrap)
 
 Quando é uma conta de anúncios nova e a campanha ainda não existe no Meta,

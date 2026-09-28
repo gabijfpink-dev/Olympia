@@ -10,7 +10,7 @@ import requests
 from meta_ads_ops.clients import BootstrapConfig, ClientConfig, load_secrets
 from meta_ads_ops.graph import GraphClient, GraphError
 from meta_ads_ops.normalize import normalizar
-from meta_ads_ops.sync import CampaignBootstrapper, CitySync
+from meta_ads_ops.sync import CampaignBootstrapper, CitySync, _buscar_cidade
 
 
 class GraphClientRetryTests(unittest.TestCase):
@@ -113,6 +113,9 @@ class FakeGraph:
             "cidade nova": {"key": "111", "name": "Cidade Nova", "region": "Sao Paulo", "country_code": "BR"},
             "cidade pronta": {"key": "222", "name": "Cidade Pronta", "region": "Sao Paulo", "country_code": "BR"},
             "brasilia": {"key": "333", "name": "Brasília", "region": "Distrito Federal", "country_code": "BR"},
+            # Homônimo real: "Sobradinho" existe no DF e também na Bahia —
+            # esse fixture simula o único resultado exato vindo do estado errado.
+            "sobradinho": {"key": "999", "name": "Sobradinho", "region": "Bahia", "country_code": "BR"},
         }
         self.state_results = {"sao paulo": {"key": "SP_STATE_KEY", "name": "São Paulo", "country_code": "BR"}}
 
@@ -328,6 +331,32 @@ class AdsetSuffixTests(unittest.TestCase):
         self.assertEqual(result.erros, [])
         ativados = [c["city"] for c in result.ads_criados]
         self.assertIn("Cidade Pronta - Aumento", ativados)
+
+
+class PreferredRegionTests(unittest.TestCase):
+    """Cidade homônima em outro estado (ex.: 'Sobradinho' existe no DF e na
+    Bahia) não pode ser aceita como match só por ser "o único resultado
+    exato" — precisa bater a região quando preferred_region é dado."""
+
+    def setUp(self):
+        self.graph = FakeGraph()
+
+    def test_rejects_single_exact_match_from_wrong_region(self):
+        resultado = _buscar_cidade(self.graph, "Sobradinho", preferred_region="Federal District")
+        self.assertIsNone(resultado)
+
+    def test_accepts_match_when_region_is_not_specified(self):
+        # Sem preferred_region, mantém o comportamento antigo (aceita o único
+        # resultado exato, seja qual for a região) — não pode regredir o Bebetto.
+        resultado = _buscar_cidade(self.graph, "Sobradinho")
+        self.assertEqual(resultado["key"], "999")
+
+    def test_accepts_match_when_region_matches(self):
+        self.graph.search_results["sobradinho"] = {
+            "key": "888", "name": "Sobradinho", "region": "Federal District", "country_code": "BR",
+        }
+        resultado = _buscar_cidade(self.graph, "Sobradinho", preferred_region="Federal District")
+        self.assertEqual(resultado["key"], "888")
 
 
 class CampaignBootstrapperTests(unittest.TestCase):

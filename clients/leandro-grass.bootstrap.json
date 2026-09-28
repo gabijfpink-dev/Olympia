@@ -12,12 +12,13 @@
   "objective": "OUTCOME_TRAFFIC",
   "optimization_goal": "LINK_CLICKS",
   "billing_event": "IMPRESSIONS",
-  "instagram_actor_id": "17841400340263472",
+  "instagram_actor_id": "111634554908753",
   "authorization_category": "POLITICAL",
   "special_ad_categories": ["ISSUES_ELECTIONS_POLITICS"],
   "age_min": 18,
   "age_max": 65,
   "genders": [1, 2],
   "radius_km": 40,
-  "fallback_state": "Federal District"
+  "fallback_state": "Federal District",
+  "preferred_region": "Federal District"
 }

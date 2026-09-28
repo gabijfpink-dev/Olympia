@@ -39,6 +39,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
+    parser.add_argument(
+        "--preferred-region", default=None,
+        help="Só pra 'geocheck': só aceita resultado dessa região (ex.: 'Federal District'), "
+        "evitando pegar cidade homônima de outro estado.",
+    )
     parser.add_argument("--config", default="config.py", help="Caminho do config.py com as credenciais (padrão: ./config.py)")
     parser.add_argument("--dry-run", action="store_true", help="Não chama a API de verdade, só simula")
     parser.add_argument("--output", default=None, help="Salva o resumo em JSON nesse caminho")
@@ -68,7 +73,9 @@ def _run_geocheck(args: argparse.Namespace, logger: logging.Logger) -> int:
 
     resultados: dict[str, dict | None] = {}
     for nome in nomes:
-        local = _buscar_cidade(graph, nome, location_types=["city", "neighborhood"])
+        local = _buscar_cidade(
+            graph, nome, location_types=["city", "neighborhood"], preferred_region=args.preferred_region,
+        )
         resultados[nome] = local
         if local:
             logger.info(

@@ -27,6 +27,14 @@ class ClientConfig:
     authorization_category: str | None = None
     ad_name: str = "01"
     fallback_state: str | None = None
+    # Filtra a busca de geolocalização pra só aceitar resultado nessa região
+    # (ex.: "Federal District") — evita pegar cidade homônima de outro estado
+    # (ex.: "Sobradinho" existe no DF e também na Bahia).
+    preferred_region: str | None = None
+    # None = só "city" (comportamento original, usado pelo Bebetto). Em
+    # capitais como Brasília, onde regiões administrativas são cadastradas
+    # como bairro, configure ["city", "neighborhood"] no clients/<nome>.json.
+    geo_location_types: list | None = None  # type: ignore[assignment]
 
 
 REQUIRED_CLIENT_FIELDS = ["name", "campaign_id", "model_adset_id", "page_id", "excel_file", "images_folder"]
@@ -50,6 +58,8 @@ def load_client(path: str) -> ClientConfig:
         authorization_category=data.get("authorization_category") or None,
         ad_name=str(data.get("ad_name", "01")),
         fallback_state=data.get("fallback_state") or None,
+        preferred_region=data.get("preferred_region") or None,
+        geo_location_types=list(data["geo_location_types"]) if data.get("geo_location_types") else None,
     )
 
 
@@ -82,6 +92,7 @@ class BootstrapConfig:
     genders: list = None  # type: ignore[assignment]
     radius_km: int = 40
     fallback_state: str | None = None
+    preferred_region: str | None = None
     ad_name: str = "01"
 
     def __post_init__(self):
@@ -126,6 +137,7 @@ def load_bootstrap(path: str) -> BootstrapConfig:
         genders=list(data.get("genders", [1, 2])),
         radius_km=int(data.get("radius_km", 40)),
         fallback_state=data.get("fallback_state") or None,
+        preferred_region=data.get("preferred_region") or None,
         ad_name=str(data.get("ad_name", "01")),
     )
 

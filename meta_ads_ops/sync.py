@@ -37,7 +37,10 @@ MODEL_ADSET_FIELDS = (
 
 
 def _buscar_cidade(
-    graph: GraphClient, nome_cidade: str, location_types: list[str] | None = None,
+    graph: GraphClient,
+    nome_cidade: str,
+    location_types: list[str] | None = None,
+    preferred_region: str | None = None,
 ) -> dict[str, Any] | None:
     """Busca de geolocalização por cidade/bairro — usada tanto pra clonar adsets
     (CitySync) quanto pra montar o primeiro adset do zero (CampaignBootstrapper).
@@ -45,7 +48,12 @@ def _buscar_cidade(
     location_types padrão inclui "neighborhood" além de "city" porque em
     algumas capitais (ex.: Brasília/DF) a cidade é uma só e as regiões
     administrativas (Plano Piloto, Taguatinga, Ceilândia...) são cadastradas
-    pela Meta como bairro, não como cidade própria."""
+    pela Meta como bairro, não como cidade própria.
+
+    preferred_region: quando dado (ex.: "Federal District"), SÓ aceita um
+    resultado cuja região bata — existem cidades homônimas em estados
+    diferentes (ex.: "Sobradinho" existe no DF e na Bahia; sem esse filtro
+    um "único resultado exato" podia vir do estado errado)."""
     tipos = location_types or ["city", "neighborhood"]
     nome_busca = str(nome_cidade).replace(" - Capital", "").strip()
     data = graph.get(
@@ -66,14 +74,29 @@ def _buscar_cidade(
     alvo = normalizar(nome_busca)
     candidatos_br = [local for local in resultados if str(local.get("country_code", "")).upper() == "BR"]
 
-    for local in candidatos_br:
-        regiao = normalizar(local.get("region", ""))
-        if normalizar(local.get("name", "")) == alvo and ("sao paulo" in regiao or regiao == "sp"):
-            return local
+    if preferred_region:
+        alvo_regiao = normalizar(preferred_region)
+        for local in candidatos_br:
+            if normalizar(local.get("name", "")) == alvo and alvo_regiao in normalizar(local.get("region", "")):
+                return local
+    else:
+        # Comportamento original (Bebetto/SP): prioriza resultado em São Paulo
+        # quando o nome bate, antes de cair no "único resultado exato".
+        for local in candidatos_br:
+            regiao = normalizar(local.get("region", ""))
+            if normalizar(local.get("name", "")) == alvo and ("sao paulo" in regiao or regiao == "sp"):
+                return local
 
     exatos = [local for local in candidatos_br if normalizar(local.get("name", "")) == alvo]
     if len(exatos) == 1:
-        return exatos[0]
+        unico = exatos[0]
+        if preferred_region and normalizar(preferred_region) not in normalizar(unico.get("region", "")):
+            logger.debug(
+                "Busca geo '%s': único resultado exato é de outra região ('%s', esperava '%s') — rejeitando.",
+                nome_busca, unico.get("region"), preferred_region,
+            )
+            return None
+        return unico
 
     logger.debug(
         "Busca geo '%s' (%s): %d candidato(s) BR, %d exato(s) — ambíguo ou não encontrado: %s",
@@ -187,9 +210,14 @@ class CitySync:
         return por_adset
 
     def search_city(self, nome_cidade: str) -> dict[str, Any] | None:
-        # Só "city" — igual sempre foi. Não ampliar pra "neighborhood" aqui
-        # pra não mudar o comportamento das cidades já em produção (Bebetto).
-        return _buscar_cidade(self.graph, nome_cidade, location_types=["city"])
+        # Sem geo_location_types/preferred_region configurado no cliente:
+        # comportamento original (só "city", heurística SP) — igual sempre
+        # foi, pra não arriscar regressão nas cidades já em produção (Bebetto).
+        return _buscar_cidade(
+            self.graph, nome_cidade,
+            location_types=self.client.geo_location_types or ["city"],
+            preferred_region=self.client.preferred_region,
+        )
 
     def search_state(self, nome_estado: str) -> dict[str, Any] | None:
         """Busca a geolocalização de um estado (region) — usado como fallback
@@ -506,7 +534,10 @@ class CampaignBootstrapper:
         # "city" e "neighborhood": em capitais como Brasília a cidade é uma só
         # (Brasília) e as regiões administrativas (Plano Piloto, Taguatinga...)
         # são cadastradas como bairro, não como cidade própria.
-        local = _buscar_cidade(self.graph, cfg.region, location_types=["city", "neighborhood"])
+        local = _buscar_cidade(
+            self.graph, cfg.region, location_types=["city", "neighborhood"],
+            preferred_region=cfg.preferred_region,
+        )
         if local and local.get("key"):
             if local.get("type") == "neighborhood":
                 # Bairro não aceita raio/distance_unit — é sempre a área exata.
