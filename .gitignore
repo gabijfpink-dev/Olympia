@@ -6,7 +6,10 @@ venv/
 *.egg-info/
 output/
 
-# config.py contém o access token real — nunca deve ser commitado.
+# config*.py contém o access token real — nunca deve ser commitado.
+# (padrão config_<conta>.py pra ter tokens separados por cliente/conta,
+# ex.: config_1818.py — config.example.py continua liberado, é só o molde)
 config.py
+config_*.py
 *.xlsx
 .state/
