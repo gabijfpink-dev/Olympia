@@ -14,6 +14,10 @@ Pra testar se uns nomes de região existem na busca de geolocalização da
 Meta ANTES de montar a planilha inteira (evita descobrir tarde que nada
 resolve):
     python -m meta_ads_ops.cli geocheck --config config_1818.py --names "Taguatinga,Ceilândia,Gama"
+
+Pra achar o instagram_actor_id CERTO pra usar num criativo (o ID do
+Business Settings costuma ser diferente do que a API de anúncios aceita):
+    python -m meta_ads_ops.cli instacheck --config config_1818.py --client clients/leandro-grass.json
 """
 
 from __future__ import annotations
@@ -24,17 +28,18 @@ import logging
 import sys
 
 from .clients import load_bootstrap, load_client, load_secrets
-from .graph import GraphClient
+from .graph import GraphClient, GraphError
 from .sync import CampaignBootstrapper, CitySync, _buscar_cidade
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "action", choices=["sync", "activate", "bootstrap", "geocheck"],
+        "action", choices=["sync", "activate", "bootstrap", "geocheck", "instacheck"],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
-        "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada.",
+        "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
+        "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
     )
     parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
@@ -96,6 +101,60 @@ def _run_geocheck(args: argparse.Namespace, logger: logging.Logger) -> int:
     return 0
 
 
+def _run_instacheck(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.client:
+        logger.error("--client é obrigatório pra 'instacheck' (usa o page_id do cliente pra referência cruzada)")
+        return 1
+
+    try:
+        client = load_client(args.client)
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+
+    try:
+        contas = graph.paginate(f"{secrets.ad_account_id}/instagram_accounts", {"fields": "id,username"})
+    except GraphError as exc:
+        logger.error("Erro buscando instagram_accounts da conta de anúncios: %s", exc)
+        contas = []
+
+    if contas:
+        logger.info("Contas de Instagram vinculadas à conta de anúncios %s (use o 'id' como instagram_actor_id):", secrets.ad_account_id)
+        for conta in contas:
+            logger.info("  instagram_actor_id=%s  username=@%s", conta.get("id"), conta.get("username"))
+    else:
+        logger.warning(
+            "Nenhuma conta de Instagram vinculada à conta de anúncios %s. "
+            "Sem uma delas, deixe instagram_actor_id como null no clients/<nome>.json.",
+            secrets.ad_account_id,
+        )
+
+    try:
+        pagina = graph.get(client.page_id, {"fields": "instagram_business_account"})
+        iba = pagina.get("instagram_business_account")
+        if iba:
+            logger.info(
+                "Referência cruzada — Página %s tem instagram_business_account.id=%s "
+                "(pode ou não ser igual ao instagram_actor_id certo acima).",
+                client.page_id, iba.get("id"),
+            )
+    except GraphError as exc:
+        logger.warning("Não consegui checar instagram_business_account da Página: %s", exc)
+
+    output_json = json.dumps({"ad_account_instagram_accounts": contas}, indent=2, ensure_ascii=False)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output_json)
+        logger.info("Resumo salvo em %s", args.output)
+    else:
+        print(output_json)
+
+    return 0
+
+
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
     if not args.bootstrap_config:
         logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
@@ -147,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "geocheck":
         return _run_geocheck(args, logger)
+
+    if args.action == "instacheck":
+        return _run_instacheck(args, logger)
 
     if not args.client:
         logger.error("--client é obrigatório pra sync/activate")
