@@ -28,7 +28,10 @@ from .normalize import normalizar
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_COLUMNS = ["city", "url", "image", "primary_text", "headline", "description"]
+REQUIRED_COLUMNS_SINGLE = ["city", "url", "image", "primary_text", "headline", "description"]
+# Carrossel de 2 cartões (ex.: Simone + Rui) — mesmo link nos dois, cada um
+# com a própria imagem.
+REQUIRED_COLUMNS_CAROUSEL = ["city", "url", "image_card1", "image_card2", "primary_text", "headline", "description"]
 
 MODEL_ADSET_FIELDS = (
     "id,name,optimization_goal,billing_event,bid_strategy,"
@@ -184,7 +187,8 @@ class CitySync:
     def load_spreadsheet(self) -> pd.DataFrame:
         df = pd.read_excel(self.client.excel_file)
 
-        missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+        required = REQUIRED_COLUMNS_CAROUSEL if self.client.creative_type == "carousel" else REQUIRED_COLUMNS_SINGLE
+        missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"Planilha '{self.client.excel_file}' sem colunas obrigatórias: {missing}")
 
@@ -351,6 +355,63 @@ class CitySync:
             return {"id": f"DRY_RUN_CREATIVE_{self._dry_run_counter}"}
         return self.graph.post(f"{self.ad_account_id}/adcreatives", params)
 
+    def _create_creative_carousel(
+        self, cidade: str, row: pd.Series, hash_card1: str, hash_card2: str,
+    ) -> dict[str, Any]:
+        """Carrossel de 2 cartões (ex.: Simone + Rui) — mesmo link/texto
+        principal, cada cartão com sua própria imagem."""
+        url = str(row["url"]).strip()
+        headline = str(row["headline"]).strip()
+        description = str(row["description"]).strip()
+
+        def _attachment(image_hash: str) -> dict[str, Any]:
+            return {
+                "link": url,
+                "image_hash": image_hash,
+                "name": headline,
+                "description": description,
+                "call_to_action": {"type": "LEARN_MORE", "value": {"link": url}},
+            }
+
+        object_story_spec: dict[str, Any] = {
+            "page_id": self.client.page_id,
+            "link_data": {
+                "link": url,
+                "message": str(row["primary_text"]).strip(),
+                "child_attachments": [_attachment(hash_card1), _attachment(hash_card2)],
+                "multi_share_end_card": False,
+            },
+        }
+        if self.client.instagram_actor_id:
+            object_story_spec["instagram_actor_id"] = self.client.instagram_actor_id
+
+        params: dict[str, Any] = {
+            "name": f"{cidade} Creative (Carrossel)",
+            "object_story_spec": json.dumps(object_story_spec, ensure_ascii=False),
+        }
+        if self.client.authorization_category:
+            params["authorization_category"] = self.client.authorization_category
+
+        if self.dry_run:
+            self._dry_run_counter += 1
+            return {"id": f"DRY_RUN_CREATIVE_{self._dry_run_counter}"}
+        return self.graph.post(f"{self.ad_account_id}/adcreatives", params)
+
+    def _build_creative(self, cidade: str, row: pd.Series) -> tuple[dict[str, Any] | None, str | None]:
+        """Resolve a(s) imagem(ns) da linha e cria o criativo certo pro
+        creative_type do cliente. Retorna (criativo, None) ou (None, erro)."""
+        if self.client.creative_type == "carousel":
+            hash_card1 = self.resolve_image_hash(str(row["image_card1"]).strip())
+            hash_card2 = self.resolve_image_hash(str(row["image_card2"]).strip())
+            if not hash_card1 or not hash_card2:
+                return None, "imagem/hash ausente (carrossel: image_card1/image_card2)"
+            return self._create_creative_carousel(cidade, row, hash_card1, hash_card2), None
+
+        image_hash = self.resolve_image_hash(str(row["image"]).strip())
+        if not image_hash:
+            return None, "imagem/hash ausente"
+        return self._create_creative(cidade, row, image_hash), None
+
     def _create_ad(self, adset_id: str, creative_id: str, status: str = "PAUSED") -> dict[str, Any]:
         params = {
             "name": self.client.ad_name,
@@ -424,12 +485,11 @@ class CitySync:
                     result.ja_prontos.append(nome_adset)
                     continue
 
-                image_hash = self.resolve_image_hash(str(row["image"]).strip())
-                if not image_hash:
-                    result.erros.append({"city": nome_adset, "step": "image", "error": "imagem/hash ausente"})
+                creative, erro_imagem = self._build_creative(nome_adset, row)
+                if erro_imagem:
+                    result.erros.append({"city": nome_adset, "step": "image", "error": erro_imagem})
                     continue
 
-                creative = self._create_creative(nome_adset, row, image_hash)
                 ad = self._create_ad(adset["id"], creative["id"])
 
                 ads_by_adset.setdefault(str(adset["id"]), []).append(ad)
@@ -581,13 +641,13 @@ class CampaignBootstrapper:
             return {"id": "DRY_RUN_ADSET_1"}
         return self.graph.post(f"{self.ad_account_id}/adsets", params)
 
-    def _upload_image(self, cfg: BootstrapConfig) -> str:
-        path = os.path.join(cfg.images_folder, cfg.image)
+    def _upload_image(self, cfg: BootstrapConfig, image_name: str) -> str:
+        path = os.path.join(cfg.images_folder, image_name)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Imagem não encontrada: {path}")
 
         if self.dry_run:
-            return "DRY_RUN_HASH::bootstrap"
+            return f"DRY_RUN_HASH::{image_name}"
 
         resp = self.graph.post_image(f"{self.ad_account_id}/adimages", path)
         imagens = resp.get("images") or {}
@@ -621,6 +681,39 @@ class CampaignBootstrapper:
             return {"id": "DRY_RUN_CREATIVE_1"}
         return self.graph.post(f"{self.ad_account_id}/adcreatives", params)
 
+    def _create_creative_carousel(self, cfg: BootstrapConfig, hash_card1: str, hash_card2: str) -> dict[str, Any]:
+        def _attachment(image_hash: str) -> dict[str, Any]:
+            return {
+                "link": cfg.url,
+                "image_hash": image_hash,
+                "name": cfg.headline,
+                "description": cfg.description,
+                "call_to_action": {"type": "LEARN_MORE", "value": {"link": cfg.url}},
+            }
+
+        object_story_spec: dict[str, Any] = {
+            "page_id": cfg.page_id,
+            "link_data": {
+                "link": cfg.url,
+                "message": cfg.primary_text,
+                "child_attachments": [_attachment(hash_card1), _attachment(hash_card2)],
+                "multi_share_end_card": False,
+            },
+        }
+        if cfg.instagram_actor_id:
+            object_story_spec["instagram_actor_id"] = cfg.instagram_actor_id
+
+        params: dict[str, Any] = {
+            "name": f"{cfg.region} Creative (Carrossel)",
+            "object_story_spec": json.dumps(object_story_spec, ensure_ascii=False),
+        }
+        if cfg.authorization_category:
+            params["authorization_category"] = cfg.authorization_category
+
+        if self.dry_run:
+            return {"id": "DRY_RUN_CREATIVE_1"}
+        return self.graph.post(f"{self.ad_account_id}/adcreatives", params)
+
     def _create_ad(self, cfg: BootstrapConfig, adset_id: str, creative_id: str) -> dict[str, Any]:
         params = {
             "name": cfg.ad_name,
@@ -640,8 +733,13 @@ class CampaignBootstrapper:
         adset = self._create_adset(cfg, campaign["id"], geo_locations)
         logger.info("Adset-modelo criado: %s -> %s", cfg.region, adset["id"])
 
-        image_hash = self._upload_image(cfg)
-        creative = self._create_creative(cfg, image_hash)
+        if cfg.creative_type == "carousel":
+            hash_card1 = self._upload_image(cfg, cfg.image_card1)
+            hash_card2 = self._upload_image(cfg, cfg.image_card2)
+            creative = self._create_creative_carousel(cfg, hash_card1, hash_card2)
+        else:
+            image_hash = self._upload_image(cfg, cfg.image)
+            creative = self._create_creative(cfg, image_hash)
         ad = self._create_ad(cfg, adset["id"], creative["id"])
         logger.info("Anúncio-modelo criado: %s -> %s", cfg.region, ad["id"])
 

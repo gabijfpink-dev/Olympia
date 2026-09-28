@@ -10,5 +10,6 @@
   "ad_name": "01",
   "fallback_state": null,
   "preferred_region": null,
-  "geo_location_types": null
+  "geo_location_types": null,
+  "creative_type": "single"
 }

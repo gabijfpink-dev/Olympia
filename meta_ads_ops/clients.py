@@ -35,6 +35,9 @@ class ClientConfig:
     # capitais como Brasília, onde regiões administrativas são cadastradas
     # como bairro, configure ["city", "neighborhood"] no clients/<nome>.json.
     geo_location_types: list | None = None  # type: ignore[assignment]
+    # "single" (padrão, 1 imagem/coluna "image") ou "carousel" (2 cartões,
+    # colunas "image_card1"/"image_card2" na planilha, mesmo link nos dois).
+    creative_type: str = "single"
 
 
 REQUIRED_CLIENT_FIELDS = ["name", "campaign_id", "model_adset_id", "page_id", "excel_file", "images_folder"]
@@ -60,6 +63,7 @@ def load_client(path: str) -> ClientConfig:
         fallback_state=data.get("fallback_state") or None,
         preferred_region=data.get("preferred_region") or None,
         geo_location_types=list(data["geo_location_types"]) if data.get("geo_location_types") else None,
+        creative_type=str(data.get("creative_type", "single")),
     )
 
 
@@ -75,12 +79,16 @@ class BootstrapConfig:
     page_id: str
     region: str
     url: str
-    image: str
     images_folder: str
     primary_text: str
     headline: str
     description: str
     daily_budget_cents: int
+    # "single" (usa `image`) ou "carousel" (usa `image_card1`/`image_card2`).
+    creative_type: str = "single"
+    image: str | None = None
+    image_card1: str | None = None
+    image_card2: str | None = None
     objective: str = "OUTCOME_TRAFFIC"
     optimization_goal: str = "LINK_CLICKS"
     billing_event: str = "IMPRESSIONS"
@@ -100,10 +108,15 @@ class BootstrapConfig:
             object.__setattr__(self, "special_ad_categories", [])
         if self.genders is None:
             object.__setattr__(self, "genders", [1, 2])
+        if self.creative_type == "carousel":
+            if not self.image_card1 or not self.image_card2:
+                raise ValueError("creative_type='carousel' precisa de image_card1 e image_card2.")
+        elif not self.image:
+            raise ValueError("creative_type='single' precisa de image.")
 
 
 REQUIRED_BOOTSTRAP_FIELDS = [
-    "campaign_name", "page_id", "region", "url", "image", "images_folder",
+    "campaign_name", "page_id", "region", "url", "images_folder",
     "primary_text", "headline", "description", "daily_budget_cents",
 ]
 
@@ -120,12 +133,15 @@ def load_bootstrap(path: str) -> BootstrapConfig:
         page_id=str(data["page_id"]),
         region=str(data["region"]),
         url=str(data["url"]),
-        image=str(data["image"]),
         images_folder=str(data["images_folder"]),
         primary_text=str(data["primary_text"]),
         headline=str(data["headline"]),
         description=str(data["description"]),
         daily_budget_cents=int(data["daily_budget_cents"]),
+        creative_type=str(data.get("creative_type", "single")),
+        image=str(data["image"]) if data.get("image") else None,
+        image_card1=str(data["image_card1"]) if data.get("image_card1") else None,
+        image_card2=str(data["image_card2"]) if data.get("image_card2") else None,
         objective=str(data.get("objective", "OUTCOME_TRAFFIC")),
         optimization_goal=str(data.get("optimization_goal", "LINK_CLICKS")),
         billing_event=str(data.get("billing_event", "IMPRESSIONS")),

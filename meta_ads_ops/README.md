@@ -55,6 +55,15 @@ python -m meta_ads_ops.cli activate --client clients/bebetto.json
 Rodar `sync` de novo é seguro: cidade que já tem adset e anúncio é
 automaticamente pulada (checado ao vivo na API, não em arquivo local).
 
+## Criativo em carrossel (2 cartões)
+
+Por padrão o criativo é de imagem única. Pra criativo em carrossel de 2
+cartões (ex.: foto da vice sempre primeiro, depois o candidato — mesmo link
+nos dois cartões), configure `"creative_type": "carousel"` no
+`clients/<nome>.json`. A planilha muda de coluna: em vez de `image`, usa
+`image_card1` e `image_card2` (mesmas outras colunas: `city, url,
+primary_text, headline, description`).
+
 ## Cidade não encontrada
 
 Se a busca de geolocalização não achar a cidade com segurança (nome

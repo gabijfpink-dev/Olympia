@@ -166,7 +166,10 @@ class FakeGraph:
         return {"success": True}
 
     def post_image(self, path, file_path):
-        return {"images": {"x": {"hash": "HASH_FAKE"}}}
+        # Hash derivado do nome do arquivo, pra dois arquivos diferentes
+        # (ex.: carrossel com 2 imagens) renderem hashes diferentes nos testes.
+        nome = Path(file_path).name
+        return {"images": {"x": {"hash": f"HASH_{nome}"}}}
 
 
 from meta_ads_ops.normalize import normalizar as _normalizar  # noqa: E402
@@ -333,6 +336,97 @@ class AdsetSuffixTests(unittest.TestCase):
         self.assertIn("Cidade Pronta - Aumento", ativados)
 
 
+class CarouselCreativeTests(unittest.TestCase):
+    """creative_type='carousel': 2 cartões (ex.: Simone + Rui) por cidade,
+    mesmo link nos dois, cada um com sua própria imagem."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        self.images_folder = Path(self.tmpdir.name) / "images"
+        self.images_folder.mkdir()
+        (self.images_folder / "simone.jpg").write_bytes(b"simone-bytes")
+        (self.images_folder / "rui.jpg").write_bytes(b"rui-bytes")
+
+        excel_path = Path(self.tmpdir.name) / "planilha.xlsx"
+        pd.DataFrame(
+            [{
+                "city": "Cidade Nova",
+                "url": "https://exemplo.com/cidade-nova",
+                "image_card1": "simone.jpg",
+                "image_card2": "rui.jpg",
+                "primary_text": "Texto principal",
+                "headline": "Título",
+                "description": "Descrição",
+            }]
+        ).to_excel(excel_path, index=False)
+
+        self.client = ClientConfig(
+            name="teste-carrossel",
+            campaign_id="CAMPANHA_1",
+            model_adset_id="MODEL_ID",
+            page_id="PAGE_1",
+            excel_file=str(excel_path),
+            images_folder=str(self.images_folder),
+            creative_type="carousel",
+        )
+        self.graph = FakeGraph()
+        self.sync = CitySync(
+            self.graph, self.client, ad_account_id="act_1", dry_run=False,
+            state_dir=str(Path(self.tmpdir.name) / ".state"),
+        )
+
+    def test_creates_carousel_with_simone_first_then_rui(self):
+        result = self.sync.sync()
+
+        self.assertEqual(result.erros, [])
+        self.assertEqual(len(result.ads_criados), 1)
+
+        creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
+        self.assertEqual(len(creative_calls), 1)
+        spec = json.loads(creative_calls[0]["object_story_spec"])
+        link_data = spec["link_data"]
+
+        attachments = link_data["child_attachments"]
+        self.assertEqual(len(attachments), 2)
+        self.assertEqual(attachments[0]["image_hash"], "HASH_simone.jpg")
+        self.assertEqual(attachments[1]["image_hash"], "HASH_rui.jpg")
+        # Mesmo link em todos os cartões e no link_data principal.
+        self.assertEqual(link_data["link"], "https://exemplo.com/cidade-nova")
+        self.assertEqual(attachments[0]["link"], "https://exemplo.com/cidade-nova")
+        self.assertEqual(attachments[1]["link"], "https://exemplo.com/cidade-nova")
+
+    def test_missing_second_image_reports_error_not_partial_creative(self):
+        (self.images_folder / "simone.jpg").unlink()
+        # Recria sem a imagem da Simone pra simular arquivo faltando.
+        result = self.sync.sync()
+
+        self.assertEqual(len(result.erros), 1)
+        self.assertEqual(result.erros[0]["step"], "image")
+        creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
+        self.assertEqual(creative_calls, [])
+
+    def test_single_client_spreadsheet_missing_carousel_columns_raises_clear_error(self):
+        # Planilha no formato antigo (coluna "image") não deve silenciosamente
+        # "quase funcionar" num cliente configurado como carrossel.
+        excel_path = Path(self.tmpdir.name) / "planilha_single.xlsx"
+        pd.DataFrame(
+            [{
+                "city": "Cidade Nova", "url": "https://exemplo.com", "image": "simone.jpg",
+                "primary_text": "t", "headline": "h", "description": "d",
+            }]
+        ).to_excel(excel_path, index=False)
+
+        client = ClientConfig(
+            name="teste-carrossel-2", campaign_id="C", model_adset_id="M", page_id="P",
+            excel_file=str(excel_path), images_folder=str(self.images_folder), creative_type="carousel",
+        )
+        sync = CitySync(FakeGraph(), client, ad_account_id="act_1", dry_run=False)
+        with self.assertRaises(ValueError):
+            sync.load_spreadsheet()
+
+
 class PreferredRegionTests(unittest.TestCase):
     """Cidade homônima em outro estado (ex.: 'Sobradinho' existe no DF e na
     Bahia) não pode ser aceita como match só por ser "o único resultado
@@ -484,6 +578,44 @@ class CampaignBootstrapperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bootstrapper.bootstrap(cfg)
 
+    def test_bootstrap_with_creative_type_carousel_creates_two_card_creative(self):
+        (self.images_folder / "simone.jpg").write_bytes(b"simone-bytes")
+        (self.images_folder / "rui.jpg").write_bytes(b"rui-bytes")
+
+        cfg = BootstrapConfig(
+            campaign_name="Eleição 2026 Rui Goet Governador",
+            page_id="PAGE_1",
+            region="Brasília",
+            url="https://exemplo.com",
+            images_folder=str(self.images_folder),
+            primary_text="Texto",
+            headline="Título",
+            description="Descrição",
+            daily_budget_cents=500000,
+            creative_type="carousel",
+            image_card1="simone.jpg",
+            image_card2="rui.jpg",
+        )
+        bootstrapper = CampaignBootstrapper(self.graph, ad_account_id="act_1", dry_run=False)
+        result = bootstrapper.bootstrap(cfg)
+
+        self.assertEqual(result["creative_id"], "CREATIVE_NOVO")
+        creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
+        spec = json.loads(creative_calls[-1]["object_story_spec"])
+        attachments = spec["link_data"]["child_attachments"]
+        self.assertEqual(len(attachments), 2)
+        self.assertEqual(attachments[0]["image_hash"], "HASH_simone.jpg")
+        self.assertEqual(attachments[1]["image_hash"], "HASH_rui.jpg")
+
+    def test_bootstrap_config_requires_matching_image_fields_for_creative_type(self):
+        with self.assertRaises(ValueError):
+            BootstrapConfig(
+                campaign_name="Campanha", page_id="PAGE_1", region="Brasília", url="https://exemplo.com",
+                images_folder=str(self.images_folder), primary_text="t", headline="h", description="d",
+                daily_budget_cents=500000, creative_type="carousel",
+                # falta image_card1/image_card2
+            )
+
 
 class FallbackStateTests(unittest.TestCase):
     def _build(self, fallback_state):
@@ -628,7 +760,7 @@ class DryRunTests(unittest.TestCase):
             real_sync = CitySync(real_graph, client, ad_account_id="act_1", dry_run=False, state_dir=state_dir)
             real_hash = real_sync.resolve_image_hash("img.jpg")
 
-            self.assertEqual(real_hash, "HASH_FAKE")  # vem do post_image real do FakeGraph, não do cache
+            self.assertEqual(real_hash, "HASH_img.jpg")  # vem do post_image real do FakeGraph, não do cache
 
     def test_poisoned_cache_from_before_the_fix_self_heals(self):
         with TemporaryDirectory() as tmp:
