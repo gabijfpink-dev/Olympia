@@ -9,6 +9,11 @@ Uso:
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json
+
+Pra testar se uns nomes de região existem na busca de geolocalização da
+Meta ANTES de montar a planilha inteira (evita descobrir tarde que nada
+resolve):
+    python -m meta_ads_ops.cli geocheck --config config_1818.py --names "Taguatinga,Ceilândia,Gama"
 """
 
 from __future__ import annotations
@@ -20,18 +25,20 @@ import sys
 
 from .clients import load_bootstrap, load_client, load_secrets
 from .graph import GraphClient
-from .sync import CampaignBootstrapper, CitySync
+from .sync import CampaignBootstrapper, CitySync, _buscar_cidade
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "action", choices=["sync", "activate", "bootstrap"],
+        "action", choices=["sync", "activate", "bootstrap", "geocheck"],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
-        "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda).",
+        "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
+        "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada.",
     )
     parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
+    parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
     parser.add_argument("--config", default="config.py", help="Caminho do config.py com as credenciais (padrão: ./config.py)")
     parser.add_argument("--dry-run", action="store_true", help="Não chama a API de verdade, só simula")
     parser.add_argument("--output", default=None, help="Salva o resumo em JSON nesse caminho")
@@ -43,6 +50,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
+
+
+def _run_geocheck(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.names:
+        logger.error("--names é obrigatório pra 'geocheck' (ex.: --names \"Taguatinga,Ceilândia,Gama\")")
+        return 1
+
+    try:
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+    nomes = [n.strip() for n in args.names.split(",") if n.strip()]
+
+    resultados: dict[str, dict | None] = {}
+    for nome in nomes:
+        local = _buscar_cidade(graph, nome, location_types=["city", "neighborhood"])
+        resultados[nome] = local
+        if local:
+            logger.info(
+                "%s -> ENCONTRADO (tipo=%s, key=%s, nome na Meta='%s')",
+                nome, local.get("type"), local.get("key"), local.get("name"),
+            )
+        else:
+            logger.info("%s -> NÃO encontrado (nem city nem neighborhood)", nome)
+
+    output_json = json.dumps(resultados, indent=2, ensure_ascii=False)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output_json)
+        logger.info("Resumo salvo em %s", args.output)
+    else:
+        print(output_json)
+
+    return 0
 
 
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
@@ -93,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "bootstrap":
         return _run_bootstrap(args, logger)
+
+    if args.action == "geocheck":
+        return _run_geocheck(args, logger)
 
     if not args.client:
         logger.error("--client é obrigatório pra sync/activate")
