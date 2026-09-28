@@ -95,13 +95,19 @@ def _buscar_estado(graph: GraphClient, nome_estado: str) -> dict[str, Any] | Non
     )
     resultados = data.get("data", [])
     alvo = normalizar(nome_estado)
-    return next(
+    encontrado = next(
         (
             local for local in resultados
             if normalizar(local.get("name", "")) == alvo and str(local.get("country_code", "")).upper() == "BR"
         ),
         None,
     )
+    if not encontrado:
+        logger.debug(
+            "Busca estado '%s': %d resultado(s), nenhum exato — nomes retornados: %s",
+            nome_estado, len(resultados), [r.get("name") for r in resultados],
+        )
+    return encontrado
 
 
 @dataclass
