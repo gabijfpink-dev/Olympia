@@ -19,5 +19,5 @@
   "age_max": 65,
   "genders": [1, 2],
   "radius_km": 40,
-  "fallback_state": "Distrito Federal"
+  "fallback_state": "Federal District"
 }
