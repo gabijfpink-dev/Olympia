@@ -22,7 +22,7 @@ from typing import Any
 
 import pandas as pd
 
-from .clients import ClientConfig
+from .clients import BootstrapConfig, ClientConfig
 from .graph import GraphClient, GraphError
 from .normalize import normalizar
 
@@ -34,6 +34,61 @@ MODEL_ADSET_FIELDS = (
     "id,name,optimization_goal,billing_event,bid_strategy,"
     "daily_budget,destination_type,promoted_object,targeting"
 )
+
+
+def _buscar_cidade(graph: GraphClient, nome_cidade: str) -> dict[str, Any] | None:
+    """Busca de geolocalização por cidade — usada tanto pra clonar adsets
+    (CitySync) quanto pra montar o primeiro adset do zero (CampaignBootstrapper)."""
+    nome_busca = str(nome_cidade).replace(" - Capital", "").strip()
+    data = graph.get(
+        "search",
+        {
+            "type": "adgeolocation",
+            "location_types": json.dumps(["city"]),
+            "q": nome_busca,
+            "country_code": "BR",
+            "limit": 50,
+        },
+    )
+    resultados = data.get("data", [])
+    if not resultados:
+        return None
+
+    alvo = normalizar(nome_busca)
+    candidatos_br = [local for local in resultados if str(local.get("country_code", "")).upper() == "BR"]
+
+    for local in candidatos_br:
+        regiao = normalizar(local.get("region", ""))
+        if normalizar(local.get("name", "")) == alvo and ("sao paulo" in regiao or regiao == "sp"):
+            return local
+
+    exatos = [local for local in candidatos_br if normalizar(local.get("name", "")) == alvo]
+    if len(exatos) == 1:
+        return exatos[0]
+
+    return None
+
+
+def _buscar_estado(graph: GraphClient, nome_estado: str) -> dict[str, Any] | None:
+    data = graph.get(
+        "search",
+        {
+            "type": "adgeolocation",
+            "location_types": json.dumps(["region"]),
+            "q": nome_estado,
+            "country_code": "BR",
+            "limit": 20,
+        },
+    )
+    resultados = data.get("data", [])
+    alvo = normalizar(nome_estado)
+    return next(
+        (
+            local for local in resultados
+            if normalizar(local.get("name", "")) == alvo and str(local.get("country_code", "")).upper() == "BR"
+        ),
+        None,
+    )
 
 
 @dataclass
@@ -113,38 +168,7 @@ class CitySync:
         return por_adset
 
     def search_city(self, nome_cidade: str) -> dict[str, Any] | None:
-        nome_busca = str(nome_cidade).replace(" - Capital", "").strip()
-        data = self.graph.get(
-            "search",
-            {
-                "type": "adgeolocation",
-                "location_types": json.dumps(["city"]),
-                "q": nome_busca,
-                "country_code": "BR",
-                "limit": 50,
-            },
-        )
-        resultados = data.get("data", [])
-        if not resultados:
-            return None
-
-        alvo = normalizar(nome_busca)
-        candidatos_br = [
-            local for local in resultados if str(local.get("country_code", "")).upper() == "BR"
-        ]
-
-        for local in candidatos_br:
-            regiao = normalizar(local.get("region", ""))
-            if normalizar(local.get("name", "")) == alvo and (
-                "sao paulo" in regiao or regiao == "sp"
-            ):
-                return local
-
-        exatos = [local for local in candidatos_br if normalizar(local.get("name", "")) == alvo]
-        if len(exatos) == 1:
-            return exatos[0]
-
-        return None
+        return _buscar_cidade(self.graph, nome_cidade)
 
     def search_state(self, nome_estado: str) -> dict[str, Any] | None:
         """Busca a geolocalização de um estado (region) — usado como fallback
@@ -152,27 +176,7 @@ class CitySync:
         if nome_estado in self._state_geo_cache:
             return self._state_geo_cache[nome_estado]
 
-        data = self.graph.get(
-            "search",
-            {
-                "type": "adgeolocation",
-                "location_types": json.dumps(["region"]),
-                "q": nome_estado,
-                "country_code": "BR",
-                "limit": 20,
-            },
-        )
-        resultados = data.get("data", [])
-        alvo = normalizar(nome_estado)
-
-        encontrado = next(
-            (
-                local for local in resultados
-                if normalizar(local.get("name", "")) == alvo
-                and str(local.get("country_code", "")).upper() == "BR"
-            ),
-            None,
-        )
+        encontrado = _buscar_estado(self.graph, nome_estado)
         self._state_geo_cache[nome_estado] = encontrado
         return encontrado
 
@@ -445,3 +449,143 @@ class CitySync:
                 result.erros.append({"city": nome_adset, "error": str(exc), "raw": exc.error})
 
         return result
+
+
+class CampaignBootstrapper:
+    """Cria do zero: campanha (CBO) -> 1º adset -> imagem -> criativo -> anúncio.
+
+    Só existe pra dar o "start" numa conta nova, sem campanha ainda. Depois de
+    rodar, o campaign_id/model_adset_id resultantes viram um clients/<nome>.json
+    normal, e o CitySync (sync/activate) assume dali em diante — igual a
+    qualquer outro cliente que já tinha campanha pronta.
+    """
+
+    def __init__(self, graph: GraphClient, ad_account_id: str, dry_run: bool = False):
+        self.graph = graph
+        self.ad_account_id = ad_account_id
+        self.dry_run = dry_run
+
+    def _create_campaign(self, cfg: BootstrapConfig) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "name": cfg.campaign_name,
+            "objective": cfg.objective,
+            "status": "PAUSED",
+            # CBO: orçamento na campanha, não no adset.
+            "daily_budget": cfg.daily_budget_cents,
+            "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+        }
+        if cfg.special_ad_categories:
+            params["special_ad_categories"] = json.dumps(cfg.special_ad_categories)
+
+        if self.dry_run:
+            return {"id": "DRY_RUN_CAMPAIGN_1"}
+        return self.graph.post(f"{self.ad_account_id}/campaigns", params)
+
+    def _geo_locations(self, cfg: BootstrapConfig) -> dict[str, Any]:
+        local = _buscar_cidade(self.graph, cfg.region)
+        if local and local.get("key"):
+            return {"cities": [{"key": str(local["key"]), "radius": cfg.radius_km, "distance_unit": "kilometer"}]}
+
+        if cfg.fallback_state:
+            estado = _buscar_estado(self.graph, cfg.fallback_state)
+            if estado and estado.get("key"):
+                logger.warning(
+                    "Região '%s' não encontrada com segurança — usando o estado '%s' inteiro no targeting inicial.",
+                    cfg.region, cfg.fallback_state,
+                )
+                return {"regions": [{"key": str(estado["key"])}]}
+
+        raise ValueError(
+            f"Não consegui localizar '{cfg.region}' na busca de geolocalização "
+            "(e não há fallback_state configurado pra usar o estado inteiro)."
+        )
+
+    def _create_adset(self, cfg: BootstrapConfig, campaign_id: str, geo_locations: dict[str, Any]) -> dict[str, Any]:
+        targeting = {
+            "age_min": cfg.age_min,
+            "age_max": cfg.age_max,
+            "genders": cfg.genders,
+            "geo_locations": geo_locations,
+        }
+        params: dict[str, Any] = {
+            "name": cfg.region,
+            "campaign_id": campaign_id,
+            "status": "PAUSED",
+            "optimization_goal": cfg.optimization_goal,
+            "billing_event": cfg.billing_event,
+            "targeting": json.dumps(targeting),
+        }
+        if self.dry_run:
+            return {"id": "DRY_RUN_ADSET_1"}
+        return self.graph.post(f"{self.ad_account_id}/adsets", params)
+
+    def _upload_image(self, cfg: BootstrapConfig) -> str:
+        path = os.path.join(cfg.images_folder, cfg.image)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Imagem não encontrada: {path}")
+
+        if self.dry_run:
+            return "DRY_RUN_HASH::bootstrap"
+
+        resp = self.graph.post_image(f"{self.ad_account_id}/adimages", path)
+        imagens = resp.get("images") or {}
+        if not imagens:
+            raise ValueError("Upload de imagem não retornou hash.")
+        return list(imagens.values())[0]["hash"]
+
+    def _create_creative(self, cfg: BootstrapConfig, image_hash: str) -> dict[str, Any]:
+        object_story_spec: dict[str, Any] = {
+            "page_id": cfg.page_id,
+            "link_data": {
+                "link": cfg.url,
+                "message": cfg.primary_text,
+                "name": cfg.headline,
+                "description": cfg.description,
+                "image_hash": image_hash,
+                "call_to_action": {"type": "LEARN_MORE", "value": {"link": cfg.url}},
+            },
+        }
+        if cfg.instagram_actor_id:
+            object_story_spec["instagram_actor_id"] = cfg.instagram_actor_id
+
+        params: dict[str, Any] = {
+            "name": f"{cfg.region} Creative",
+            "object_story_spec": json.dumps(object_story_spec, ensure_ascii=False),
+        }
+        if cfg.authorization_category:
+            params["authorization_category"] = cfg.authorization_category
+
+        if self.dry_run:
+            return {"id": "DRY_RUN_CREATIVE_1"}
+        return self.graph.post(f"{self.ad_account_id}/adcreatives", params)
+
+    def _create_ad(self, cfg: BootstrapConfig, adset_id: str, creative_id: str) -> dict[str, Any]:
+        params = {
+            "name": cfg.ad_name,
+            "adset_id": adset_id,
+            "creative": json.dumps({"creative_id": creative_id}),
+            "status": "PAUSED",
+        }
+        if self.dry_run:
+            return {"id": "DRY_RUN_AD_1"}
+        return self.graph.post(f"{self.ad_account_id}/ads", params)
+
+    def bootstrap(self, cfg: BootstrapConfig) -> dict[str, Any]:
+        campaign = self._create_campaign(cfg)
+        logger.info("Campanha criada: %s -> %s", cfg.campaign_name, campaign["id"])
+
+        geo_locations = self._geo_locations(cfg)
+        adset = self._create_adset(cfg, campaign["id"], geo_locations)
+        logger.info("Adset-modelo criado: %s -> %s", cfg.region, adset["id"])
+
+        image_hash = self._upload_image(cfg)
+        creative = self._create_creative(cfg, image_hash)
+        ad = self._create_ad(cfg, adset["id"], creative["id"])
+        logger.info("Anúncio-modelo criado: %s -> %s", cfg.region, ad["id"])
+
+        return {
+            "campaign_id": campaign["id"],
+            "model_adset_id": adset["id"],
+            "creative_id": creative["id"],
+            "ad_id": ad["id"],
+        }

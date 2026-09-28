@@ -1,0 +1,23 @@
+{
+  "campaign_name": "Nome da campanha",
+  "page_id": "ID_DA_PAGINA_DO_FACEBOOK",
+  "region": "Nome da 1ª cidade/região",
+  "url": "https://exemplo.com",
+  "image": "nome-do-arquivo.jpg",
+  "images_folder": "C:/MetaAPI/<cliente>/images",
+  "primary_text": "Texto principal do anúncio",
+  "headline": "Título",
+  "description": "Descrição",
+  "daily_budget_cents": 500000,
+  "objective": "OUTCOME_TRAFFIC",
+  "optimization_goal": "LINK_CLICKS",
+  "billing_event": "IMPRESSIONS",
+  "instagram_actor_id": null,
+  "authorization_category": null,
+  "special_ad_categories": [],
+  "age_min": 18,
+  "age_max": 65,
+  "genders": [1, 2],
+  "radius_km": 40,
+  "fallback_state": null
+}

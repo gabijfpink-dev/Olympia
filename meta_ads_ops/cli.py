@@ -5,6 +5,10 @@ Uso:
     python -m meta_ads_ops.cli sync --client clients/bebetto.json --dry-run
     python -m meta_ads_ops.cli sync --client clients/bebetto.json
     python -m meta_ads_ops.cli activate --client clients/bebetto.json
+
+Pra criar a campanha do zero (conta nova, sem campanha ainda):
+    python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
+    python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json
 """
 
 from __future__ import annotations
@@ -14,15 +18,20 @@ import json
 import logging
 import sys
 
-from .clients import load_client, load_secrets
+from .clients import load_bootstrap, load_client, load_secrets
 from .graph import GraphClient
-from .sync import CitySync
+from .sync import CampaignBootstrapper, CitySync
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("action", choices=["sync", "activate"], help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe.")
-    parser.add_argument("--client", required=True, help="Caminho do JSON de configuração do cliente (ex.: clients/bebetto.json)")
+    parser.add_argument(
+        "action", choices=["sync", "activate", "bootstrap"],
+        help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
+        "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda).",
+    )
+    parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
+    parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--config", default="config.py", help="Caminho do config.py com as credenciais (padrão: ./config.py)")
     parser.add_argument("--dry-run", action="store_true", help="Não chama a API de verdade, só simula")
     parser.add_argument("--output", default=None, help="Salva o resumo em JSON nesse caminho")
@@ -36,6 +45,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.bootstrap_config:
+        logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
+        return 1
+
+    try:
+        cfg = load_bootstrap(args.bootstrap_config)
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    logger.info("Bootstrap: campanha='%s' região='%s' dry-run=%s", cfg.campaign_name, cfg.region, args.dry_run)
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+    bootstrapper = CampaignBootstrapper(graph, secrets.ad_account_id, dry_run=args.dry_run)
+
+    try:
+        result = bootstrapper.bootstrap(cfg)
+    except Exception as exc:  # noqa: BLE001 - qualquer falha de execução deve ser reportada, não engolida
+        logger.error("Execução interrompida: %s", exc)
+        return 1
+
+    output_json = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output_json)
+        logger.info("Resumo salvo em %s", args.output)
+    else:
+        print(output_json)
+
+    logger.info(
+        "Pronto. Cole campaign_id=%s e model_adset_id=%s no clients/<nome>.json e siga com sync/activate.",
+        result["campaign_id"], result["model_adset_id"],
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -43,6 +90,13 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     logger = logging.getLogger("meta_ads_ops")
+
+    if args.action == "bootstrap":
+        return _run_bootstrap(args, logger)
+
+    if not args.client:
+        logger.error("--client é obrigatório pra sync/activate")
+        return 1
 
     try:
         client = load_client(args.client)

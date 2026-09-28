@@ -70,6 +70,42 @@ ambíguo, mais de uma cidade com o mesmo nome em estados diferentes etc.):
   cidade. Essas cidades aparecem separadas em `adsets_fallback_estado` no
   resumo, para você revisar o targeting delas depois se quiser refinar.
 
+## Conta nova, sem campanha ainda (bootstrap)
+
+Quando é uma conta de anúncios nova e a campanha ainda não existe no Meta,
+use `bootstrap` pra criar do zero: campanha (com orçamento por campanha —
+CBO) → 1º conjunto de anúncios (a primeira região/cidade) → imagem →
+criativo → anúncio, tudo pausado. Depois disso o `campaign_id` e
+`model_adset_id` resultantes viram um `clients/<nome>.json` normal, e o
+`sync`/`activate` seguem exatamente como pra qualquer outro cliente.
+
+```bash
+cp clients/example.bootstrap.json clients/<cliente>.bootstrap.json   # preencha
+python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/<cliente>.bootstrap.json --dry-run
+python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/<cliente>.bootstrap.json --output resultado_bootstrap.json
+```
+
+O comando imprime `campaign_id` e `model_adset_id` — copie os dois pro
+`clients/<cliente>.json` (junto com `page_id`, `instagram_actor_id`,
+`authorization_category`, `excel_file`, `images_folder`) e siga com `sync`
+normalmente a partir da segunda cidade/região em diante (a planilha pode
+repetir a primeira linha — ela já vai aparecer como "pronta", já que o
+adset criado no bootstrap tem o mesmo nome).
+
+Campos do `clients/<cliente>.bootstrap.json`:
+- `campaign_name`, `page_id`, `region` (nome da 1ª cidade/região),
+  `daily_budget_cents` (orçamento diário da campanha inteira, em centavos —
+  ex.: `500000` = R$ 5.000,00/dia)
+- `url`, `image`, `images_folder`, `primary_text`, `headline`, `description`
+  (o 1º criativo — igual às colunas da planilha normal)
+- Opcionais: `objective` (padrão `"OUTCOME_TRAFFIC"`), `optimization_goal`
+  (padrão `"LINK_CLICKS"`), `billing_event` (padrão `"IMPRESSIONS"`),
+  `instagram_actor_id`, `authorization_category` (`"POLITICAL"` pra
+  eleitoral), `special_ad_categories` (ex.: `["ISSUES_ELECTIONS_POLITICS"]`
+  — obrigatório em campanha eleitoral), `age_min`/`age_max`/`genders`,
+  `radius_km`, `fallback_state` (mesmo mecanismo do `sync`, caso a região
+  não seja encontrada com segurança).
+
 ## Aumentar investimento numa cidade que já está rodando
 
 Pra criar um **segundo** conjunto de anúncios numa cidade que já tem um

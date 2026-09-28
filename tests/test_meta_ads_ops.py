@@ -7,10 +7,10 @@ from unittest.mock import patch
 import pandas as pd
 import requests
 
-from meta_ads_ops.clients import ClientConfig, load_secrets
+from meta_ads_ops.clients import BootstrapConfig, ClientConfig, load_secrets
 from meta_ads_ops.graph import GraphClient, GraphError
 from meta_ads_ops.normalize import normalizar
-from meta_ads_ops.sync import CitySync
+from meta_ads_ops.sync import CampaignBootstrapper, CitySync
 
 
 class GraphClientRetryTests(unittest.TestCase):
@@ -112,6 +112,7 @@ class FakeGraph:
         self.search_results = {
             "cidade nova": {"key": "111", "name": "Cidade Nova", "region": "Sao Paulo", "country_code": "BR"},
             "cidade pronta": {"key": "222", "name": "Cidade Pronta", "region": "Sao Paulo", "country_code": "BR"},
+            "brasilia": {"key": "333", "name": "Brasília", "region": "Distrito Federal", "country_code": "BR"},
         }
         self.state_results = {"sao paulo": {"key": "SP_STATE_KEY", "name": "São Paulo", "country_code": "BR"}}
 
@@ -136,6 +137,8 @@ class FakeGraph:
 
     def post(self, path, data=None):
         self.posts.append((path, data))
+        if path.endswith("/campaigns"):
+            return {"id": "CAMPANHA_NOVA"}
         if path.endswith("/adsets"):
             self.adsets.append({"id": "ADSET_NOVO", "name": data.get("name"), "status": "PAUSED"})
             return {"id": "ADSET_NOVO"}
@@ -325,6 +328,106 @@ class AdsetSuffixTests(unittest.TestCase):
         self.assertEqual(result.erros, [])
         ativados = [c["city"] for c in result.ads_criados]
         self.assertIn("Cidade Pronta - Aumento", ativados)
+
+
+class CampaignBootstrapperTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        self.images_folder = Path(self.tmpdir.name) / "images"
+        self.images_folder.mkdir()
+        (self.images_folder / "brasilia.jpg").write_bytes(b"fake-image-bytes")
+
+        self.graph = FakeGraph()
+        self.cfg = BootstrapConfig(
+            campaign_name="Eleição 2026 Leandro Grass Governador",
+            page_id="PAGE_1",
+            region="Brasília",
+            url="https://exemplo.com",
+            image="brasilia.jpg",
+            images_folder=str(self.images_folder),
+            primary_text="Texto",
+            headline="Título",
+            description="Descrição",
+            daily_budget_cents=500000,
+            instagram_actor_id="17841400340263472",
+            authorization_category="POLITICAL",
+            special_ad_categories=["ISSUES_ELECTIONS_POLITICS"],
+        )
+
+    def test_creates_campaign_adset_creative_and_ad_in_order(self):
+        bootstrapper = CampaignBootstrapper(self.graph, ad_account_id="act_1", dry_run=False)
+        result = bootstrapper.bootstrap(self.cfg)
+
+        self.assertEqual(result["campaign_id"], "CAMPANHA_NOVA")
+        self.assertEqual(result["model_adset_id"], "ADSET_NOVO")
+        self.assertEqual(result["creative_id"], "CREATIVE_NOVO")
+        self.assertEqual(result["ad_id"], "AD_NOVO")
+
+        campaign_calls = [data for path, data in self.graph.posts if path.endswith("/campaigns")]
+        self.assertEqual(len(campaign_calls), 1)
+        self.assertEqual(campaign_calls[0]["daily_budget"], 500000)
+        self.assertEqual(
+            json.loads(campaign_calls[0]["special_ad_categories"]), ["ISSUES_ELECTIONS_POLITICS"],
+        )
+
+        adset_calls = [data for path, data in self.graph.posts if path.endswith("/adsets")]
+        self.assertEqual(adset_calls[-1]["campaign_id"], "CAMPANHA_NOVA")
+        self.assertNotIn("daily_budget", adset_calls[-1])  # CBO: orçamento fica na campanha
+        targeting = json.loads(adset_calls[-1]["targeting"])
+        self.assertEqual(targeting["geo_locations"], {"cities": [{"key": "333", "radius": 40, "distance_unit": "kilometer"}]})
+
+        creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
+        spec = json.loads(creative_calls[-1]["object_story_spec"])
+        self.assertEqual(spec["instagram_actor_id"], "17841400340263472")
+        self.assertEqual(creative_calls[-1]["authorization_category"], "POLITICAL")
+
+    def test_dry_run_never_calls_post_and_returns_placeholder_ids(self):
+        bootstrapper = CampaignBootstrapper(self.graph, ad_account_id="act_1", dry_run=True)
+        result = bootstrapper.bootstrap(self.cfg)
+
+        self.assertEqual(self.graph.posts, [])
+        self.assertEqual(result["campaign_id"], "DRY_RUN_CAMPAIGN_1")
+        self.assertEqual(result["model_adset_id"], "DRY_RUN_ADSET_1")
+
+    def test_falls_back_to_state_when_region_not_found(self):
+        cfg = BootstrapConfig(
+            campaign_name="Campanha",
+            page_id="PAGE_1",
+            region="Região Fantasma",
+            url="https://exemplo.com",
+            image="brasilia.jpg",
+            images_folder=str(self.images_folder),
+            primary_text="Texto",
+            headline="Título",
+            description="Descrição",
+            daily_budget_cents=500000,
+            fallback_state="São Paulo",
+        )
+        bootstrapper = CampaignBootstrapper(self.graph, ad_account_id="act_1", dry_run=False)
+        bootstrapper.bootstrap(cfg)
+
+        adset_calls = [data for path, data in self.graph.posts if path.endswith("/adsets")]
+        targeting = json.loads(adset_calls[-1]["targeting"])
+        self.assertEqual(targeting["geo_locations"], {"regions": [{"key": "SP_STATE_KEY"}]})
+
+    def test_raises_clear_error_when_region_and_fallback_both_fail(self):
+        cfg = BootstrapConfig(
+            campaign_name="Campanha",
+            page_id="PAGE_1",
+            region="Região Fantasma",
+            url="https://exemplo.com",
+            image="brasilia.jpg",
+            images_folder=str(self.images_folder),
+            primary_text="Texto",
+            headline="Título",
+            description="Descrição",
+            daily_budget_cents=500000,
+        )
+        bootstrapper = CampaignBootstrapper(self.graph, ad_account_id="act_1", dry_run=False)
+        with self.assertRaises(ValueError):
+            bootstrapper.bootstrap(cfg)
 
 
 class FallbackStateTests(unittest.TestCase):

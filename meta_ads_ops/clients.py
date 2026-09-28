@@ -54,6 +54,83 @@ def load_client(path: str) -> ClientConfig:
 
 
 @dataclass(frozen=True)
+class BootstrapConfig:
+    """Dados pra criar do zero: campanha (CBO) + 1º adset + criativo + anúncio.
+
+    Depois de rodar, o campaign_id/model_adset_id resultantes vão pro
+    clients/<nome>.json normal, e o fluxo sync/activate segue igual ao
+    de qualquer outro cliente a partir daí."""
+
+    campaign_name: str
+    page_id: str
+    region: str
+    url: str
+    image: str
+    images_folder: str
+    primary_text: str
+    headline: str
+    description: str
+    daily_budget_cents: int
+    objective: str = "OUTCOME_TRAFFIC"
+    optimization_goal: str = "LINK_CLICKS"
+    billing_event: str = "IMPRESSIONS"
+    instagram_actor_id: str | None = None
+    authorization_category: str | None = None
+    special_ad_categories: list = None  # type: ignore[assignment]
+    age_min: int = 18
+    age_max: int = 65
+    genders: list = None  # type: ignore[assignment]
+    radius_km: int = 40
+    fallback_state: str | None = None
+    ad_name: str = "01"
+
+    def __post_init__(self):
+        if self.special_ad_categories is None:
+            object.__setattr__(self, "special_ad_categories", [])
+        if self.genders is None:
+            object.__setattr__(self, "genders", [1, 2])
+
+
+REQUIRED_BOOTSTRAP_FIELDS = [
+    "campaign_name", "page_id", "region", "url", "image", "images_folder",
+    "primary_text", "headline", "description", "daily_budget_cents",
+]
+
+
+def load_bootstrap(path: str) -> BootstrapConfig:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+
+    missing = [field for field in REQUIRED_BOOTSTRAP_FIELDS if not data.get(field) and data.get(field) != 0]
+    if missing:
+        raise ValueError(f"Config de bootstrap '{path}' sem os campos obrigatórios: {missing}")
+
+    return BootstrapConfig(
+        campaign_name=str(data["campaign_name"]),
+        page_id=str(data["page_id"]),
+        region=str(data["region"]),
+        url=str(data["url"]),
+        image=str(data["image"]),
+        images_folder=str(data["images_folder"]),
+        primary_text=str(data["primary_text"]),
+        headline=str(data["headline"]),
+        description=str(data["description"]),
+        daily_budget_cents=int(data["daily_budget_cents"]),
+        objective=str(data.get("objective", "OUTCOME_TRAFFIC")),
+        optimization_goal=str(data.get("optimization_goal", "LINK_CLICKS")),
+        billing_event=str(data.get("billing_event", "IMPRESSIONS")),
+        instagram_actor_id=str(data["instagram_actor_id"]) if data.get("instagram_actor_id") else None,
+        authorization_category=data.get("authorization_category") or None,
+        special_ad_categories=list(data.get("special_ad_categories", [])),
+        age_min=int(data.get("age_min", 18)),
+        age_max=int(data.get("age_max", 65)),
+        genders=list(data.get("genders", [1, 2])),
+        radius_km=int(data.get("radius_km", 40)),
+        fallback_state=data.get("fallback_state") or None,
+        ad_name=str(data.get("ad_name", "01")),
+    )
+
+
+@dataclass(frozen=True)
 class Secrets:
     access_token: str
     ad_account_id: str

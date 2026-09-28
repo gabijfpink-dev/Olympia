@@ -1,0 +1,23 @@
+{
+  "campaign_name": "ELEICAO 2026 LEANDRO ANTONIO GRASS PEIXOTO GOVERNADOR",
+  "page_id": "153682945207770",
+  "region": "Brasília",
+  "url": "PREENCHER: site/link do anúncio",
+  "image": "PREENCHER: nome-do-arquivo.jpg",
+  "images_folder": "C:/MetaAPI/LeandroGrass/images",
+  "primary_text": "PREENCHER: texto principal do anúncio",
+  "headline": "PREENCHER: título",
+  "description": "PREENCHER: descrição",
+  "daily_budget_cents": 500000,
+  "objective": "OUTCOME_TRAFFIC",
+  "optimization_goal": "LINK_CLICKS",
+  "billing_event": "IMPRESSIONS",
+  "instagram_actor_id": "17841400340263472",
+  "authorization_category": "POLITICAL",
+  "special_ad_categories": ["ISSUES_ELECTIONS_POLITICS"],
+  "age_min": 18,
+  "age_max": 65,
+  "genders": [1, 2],
+  "radius_km": 40,
+  "fallback_state": "Distrito Federal"
+}
