@@ -391,6 +391,32 @@ class CampaignBootstrapperTests(unittest.TestCase):
         self.assertEqual(result["campaign_id"], "DRY_RUN_CAMPAIGN_1")
         self.assertEqual(result["model_adset_id"], "DRY_RUN_ADSET_1")
 
+    def test_neighborhood_match_uses_neighborhoods_key_not_cities(self):
+        # Em capitais como Brasília, a região administrativa (Plano Piloto,
+        # Taguatinga...) é cadastrada como bairro, não como cidade própria —
+        # não pode virar {"cities": [...]} com raio, tem que ser {"neighborhoods": [...]}.
+        self.graph.search_results["plano piloto"] = {
+            "key": "444", "name": "Plano Piloto", "type": "neighborhood", "country_code": "BR",
+        }
+        cfg = BootstrapConfig(
+            campaign_name="Campanha",
+            page_id="PAGE_1",
+            region="Plano Piloto",
+            url="https://exemplo.com",
+            image="brasilia.jpg",
+            images_folder=str(self.images_folder),
+            primary_text="Texto",
+            headline="Título",
+            description="Descrição",
+            daily_budget_cents=500000,
+        )
+        bootstrapper = CampaignBootstrapper(self.graph, ad_account_id="act_1", dry_run=False)
+        bootstrapper.bootstrap(cfg)
+
+        adset_calls = [data for path, data in self.graph.posts if path.endswith("/adsets")]
+        targeting = json.loads(adset_calls[-1]["targeting"])
+        self.assertEqual(targeting["geo_locations"], {"neighborhoods": [{"key": "444"}]})
+
     def test_falls_back_to_state_when_region_not_found(self):
         cfg = BootstrapConfig(
             campaign_name="Campanha",

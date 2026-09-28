@@ -36,15 +36,23 @@ MODEL_ADSET_FIELDS = (
 )
 
 
-def _buscar_cidade(graph: GraphClient, nome_cidade: str) -> dict[str, Any] | None:
-    """Busca de geolocalização por cidade — usada tanto pra clonar adsets
-    (CitySync) quanto pra montar o primeiro adset do zero (CampaignBootstrapper)."""
+def _buscar_cidade(
+    graph: GraphClient, nome_cidade: str, location_types: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Busca de geolocalização por cidade/bairro — usada tanto pra clonar adsets
+    (CitySync) quanto pra montar o primeiro adset do zero (CampaignBootstrapper).
+
+    location_types padrão inclui "neighborhood" além de "city" porque em
+    algumas capitais (ex.: Brasília/DF) a cidade é uma só e as regiões
+    administrativas (Plano Piloto, Taguatinga, Ceilândia...) são cadastradas
+    pela Meta como bairro, não como cidade própria."""
+    tipos = location_types or ["city", "neighborhood"]
     nome_busca = str(nome_cidade).replace(" - Capital", "").strip()
     data = graph.get(
         "search",
         {
             "type": "adgeolocation",
-            "location_types": json.dumps(["city"]),
+            "location_types": json.dumps(tipos),
             "q": nome_busca,
             "country_code": "BR",
             "limit": 50,
@@ -52,6 +60,7 @@ def _buscar_cidade(graph: GraphClient, nome_cidade: str) -> dict[str, Any] | Non
     )
     resultados = data.get("data", [])
     if not resultados:
+        logger.debug("Busca geo '%s' (%s): 0 resultado(s).", nome_busca, tipos)
         return None
 
     alvo = normalizar(nome_busca)
@@ -66,6 +75,10 @@ def _buscar_cidade(graph: GraphClient, nome_cidade: str) -> dict[str, Any] | Non
     if len(exatos) == 1:
         return exatos[0]
 
+    logger.debug(
+        "Busca geo '%s' (%s): %d candidato(s) BR, %d exato(s) — ambíguo ou não encontrado: %s",
+        nome_busca, tipos, len(candidatos_br), len(exatos), [c.get("name") for c in candidatos_br],
+    )
     return None
 
 
@@ -168,7 +181,9 @@ class CitySync:
         return por_adset
 
     def search_city(self, nome_cidade: str) -> dict[str, Any] | None:
-        return _buscar_cidade(self.graph, nome_cidade)
+        # Só "city" — igual sempre foi. Não ampliar pra "neighborhood" aqui
+        # pra não mudar o comportamento das cidades já em produção (Bebetto).
+        return _buscar_cidade(self.graph, nome_cidade, location_types=["city"])
 
     def search_state(self, nome_estado: str) -> dict[str, Any] | None:
         """Busca a geolocalização de um estado (region) — usado como fallback
@@ -482,8 +497,14 @@ class CampaignBootstrapper:
         return self.graph.post(f"{self.ad_account_id}/campaigns", params)
 
     def _geo_locations(self, cfg: BootstrapConfig) -> dict[str, Any]:
-        local = _buscar_cidade(self.graph, cfg.region)
+        # "city" e "neighborhood": em capitais como Brasília a cidade é uma só
+        # (Brasília) e as regiões administrativas (Plano Piloto, Taguatinga...)
+        # são cadastradas como bairro, não como cidade própria.
+        local = _buscar_cidade(self.graph, cfg.region, location_types=["city", "neighborhood"])
         if local and local.get("key"):
+            if local.get("type") == "neighborhood":
+                # Bairro não aceita raio/distance_unit — é sempre a área exata.
+                return {"neighborhoods": [{"key": str(local["key"])}]}
             return {"cities": [{"key": str(local["key"]), "radius": cfg.radius_km, "distance_unit": "kilometer"}]}
 
         if cfg.fallback_state:
@@ -494,10 +515,14 @@ class CampaignBootstrapper:
                     cfg.region, cfg.fallback_state,
                 )
                 return {"regions": [{"key": str(estado["key"])}]}
+            raise ValueError(
+                f"Não consegui localizar '{cfg.region}' NEM o estado de fallback "
+                f"'{cfg.fallback_state}' na busca de geolocalização."
+            )
 
         raise ValueError(
             f"Não consegui localizar '{cfg.region}' na busca de geolocalização "
-            "(e não há fallback_state configurado pra usar o estado inteiro)."
+            "e não há fallback_state configurado no bootstrap.json pra usar o estado inteiro."
         )
 
     def _create_adset(self, cfg: BootstrapConfig, campaign_id: str, geo_locations: dict[str, Any]) -> dict[str, Any]:
