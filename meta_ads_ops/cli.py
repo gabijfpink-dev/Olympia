@@ -13,9 +13,11 @@ com o dado certo (ex.: coluna "url") e rode:
     python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json
 
 Pra definir data de encerramento e/ou trocar orçamento diário por total
-numa campanha que já existe (não mexe em adset/anúncio):
+numa campanha que já existe (por padrão não mexe em adset/anúncio; use
+--cascade-adsets se algum adset tiver end_time próprio, ex.: herdado da
+campanha na hora da criação, e precisar ser alinhado também):
     python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --dry-run
-    python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00"
+    python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --cascade-adsets
 
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
@@ -40,7 +42,7 @@ import sys
 
 from .clients import load_bootstrap, load_client, load_secrets
 from .graph import GraphClient, GraphError
-from .sync import CampaignBootstrapper, CitySync, _buscar_cidade, update_campaign
+from .sync import CampaignBootstrapper, CitySync, _buscar_cidade, update_adsets_end_time, update_campaign
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -70,6 +72,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--campaign-id", default=None,
         help="Só pra 'campaign-update': ID da campanha direto, pra campanha avulsa que não tem "
         "clients/<nome>.json (usa em vez de --client; ainda precisa de --config pro token).",
+    )
+    parser.add_argument(
+        "--cascade-adsets", action="store_true",
+        help="Só pra 'campaign-update': também aplica o mesmo --end-time em TODOS os adsets da "
+        "campanha (útil quando algum adset tem data de encerramento própria, diferente da "
+        "campanha, e precisa ser alinhado).",
     )
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
@@ -226,7 +234,19 @@ def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> in
         logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
         return 1
 
-    logger.info("Concluído: %s", json.dumps(result, ensure_ascii=False))
+    logger.info("Concluído (campanha): %s", json.dumps(result, ensure_ascii=False))
+
+    if args.cascade_adsets:
+        try:
+            adsets_result = update_adsets_end_time(graph, campaign_id, args.end_time, dry_run=args.dry_run)
+        except GraphError as exc:
+            logger.error("Erro atualizando end_time dos adsets de %s: %s", campaign_id, exc)
+            logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+            return 1
+        logger.info("Concluído (adsets): %d adset(s) atualizado(s)", len(adsets_result))
+        for a in adsets_result:
+            logger.info("  adset %s (%s) -> end_time=%s", a["adset_id"], a.get("name"), a["end_time"])
+
     return 0
 
 

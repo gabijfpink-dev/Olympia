@@ -147,6 +147,22 @@ def update_campaign(
     return graph.post(campaign_id, params)
 
 
+def update_adsets_end_time(
+    graph: GraphClient, campaign_id: str, end_time: str, dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    """Define end_time em TODOS os adsets de uma campanha (não só na
+    campanha) — necessário quando um adset foi criado com data de
+    encerramento própria (ex.: herdada da campanha na hora da criação) e
+    precisa ser alinhado à nova data."""
+    adsets = graph.paginate(f"{campaign_id}/adsets", {"fields": "id,name"})
+    resultados: list[dict[str, Any]] = []
+    for adset in adsets:
+        if not dry_run:
+            graph.post(str(adset["id"]), {"end_time": end_time})
+        resultados.append({"adset_id": adset["id"], "name": adset.get("name"), "end_time": end_time})
+    return resultados
+
+
 @dataclass
 class SyncResult:
     adsets_criados: list[dict[str, Any]] = field(default_factory=list)
