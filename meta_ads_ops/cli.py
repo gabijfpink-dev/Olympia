@@ -66,6 +66,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Só pra 'campaign-update': orçamento TOTAL da campanha em centavos, substituindo o "
         "diário (exige --end-time — a Meta não aceita lifetime_budget sem data de encerramento).",
     )
+    parser.add_argument(
+        "--campaign-id", default=None,
+        help="Só pra 'campaign-update': ID da campanha direto, pra campanha avulsa que não tem "
+        "clients/<nome>.json (usa em vez de --client; ainda precisa de --config pro token).",
+    )
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
     parser.add_argument(
@@ -180,8 +185,8 @@ def _run_instacheck(args: argparse.Namespace, logger: logging.Logger) -> int:
 
 
 def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> int:
-    if not args.client:
-        logger.error("--client é obrigatório pra 'campaign-update' (usa o campaign_id do cliente)")
+    if not args.client and not args.campaign_id:
+        logger.error("--client ou --campaign-id é obrigatório pra 'campaign-update'")
         return 1
     if not args.end_time:
         logger.error("--end-time é obrigatório pra 'campaign-update' (ex.: '2026-10-01T22:00:00-03:00')")
@@ -190,8 +195,11 @@ def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> in
         logger.error("--lifetime-budget-cents precisa ser positivo")
         return 1
 
+    campaign_id = args.campaign_id
     try:
-        client = load_client(args.client)
+        if not campaign_id:
+            client = load_client(args.client)
+            campaign_id = client.campaign_id
         secrets = load_secrets(args.config)
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
@@ -205,16 +213,16 @@ def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> in
         params["daily_budget"] = ""
 
     logger.info(
-        "Cliente=%s campanha=%s end_time=%s lifetime_budget_cents=%s dry-run=%s",
-        client.name, client.campaign_id, args.end_time, args.lifetime_budget_cents, args.dry_run,
+        "campanha=%s end_time=%s lifetime_budget_cents=%s dry-run=%s",
+        campaign_id, args.end_time, args.lifetime_budget_cents, args.dry_run,
     )
 
     graph = GraphClient(secrets.access_token, secrets.api_version)
 
     try:
-        result = update_campaign(graph, client.campaign_id, params, dry_run=args.dry_run)
+        result = update_campaign(graph, campaign_id, params, dry_run=args.dry_run)
     except GraphError as exc:
-        logger.error("Erro atualizando campanha %s: %s", client.campaign_id, exc)
+        logger.error("Erro atualizando campanha %s: %s", campaign_id, exc)
         logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
         return 1
 
