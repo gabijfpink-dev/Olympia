@@ -19,6 +19,12 @@ campanha na hora da criação, e precisar ser alinhado também):
     python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --dry-run
     python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --cascade-adsets
 
+Pra duplicar uma campanha inteira (adsets+anúncios+criativos), nascendo
+pausada de propósito — depois ajuste orçamento/end_time da cópia com
+campaign-update, e só então ative ela:
+    python -m meta_ads_ops.cli campaign-duplicate --campaign-id 120253168661690652 --config config_donato.py --dry-run
+    python -m meta_ads_ops.cli campaign-duplicate --campaign-id 120253168661690652 --config config_donato.py
+
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json
@@ -42,17 +48,28 @@ import sys
 
 from .clients import load_bootstrap, load_client, load_secrets
 from .graph import GraphClient, GraphError, RateLimitError
-from .sync import CampaignBootstrapper, CitySync, _buscar_cidade, update_adsets_end_time, update_campaign
+from .sync import (
+    CampaignBootstrapper,
+    CitySync,
+    _buscar_cidade,
+    duplicate_campaign,
+    update_adsets_end_time,
+    update_campaign,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "action", choices=["sync", "activate", "update-creative", "campaign-update", "bootstrap", "geocheck", "instacheck"],
+        "action", choices=[
+            "sync", "activate", "update-creative", "campaign-update", "campaign-duplicate",
+            "bootstrap", "geocheck", "instacheck",
+        ],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
         "update-creative: recria o criativo (link/texto/imagem) de cidades já com anúncio, a "
         "partir dos dados atuais da planilha, e troca a referência do anúncio pro criativo novo. "
         "campaign-update: define end_time e/ou troca orçamento diário por total, direto na campanha. "
+        "campaign-duplicate: duplica campanha inteira (adsets+anúncios+criativos), pausada. "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
         "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
@@ -78,6 +95,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Só pra 'campaign-update': também aplica o mesmo --end-time em TODOS os adsets da "
         "campanha (útil quando algum adset tem data de encerramento própria, diferente da "
         "campanha, e precisa ser alinhado).",
+    )
+    parser.add_argument(
+        "--status-option", default="PAUSED", choices=["PAUSED", "ACTIVE", "INHERITED_FROM_SOURCE"],
+        help="Só pra 'campaign-duplicate': status da cópia recém-criada (padrão: PAUSED, pra dar "
+        "tempo de ajustar orçamento/end_time antes dela gastar).",
     )
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
@@ -259,6 +281,48 @@ def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> in
     return 0
 
 
+def _run_campaign_duplicate(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.client and not args.campaign_id:
+        logger.error("--client ou --campaign-id é obrigatório pra 'campaign-duplicate'")
+        return 1
+
+    campaign_id = args.campaign_id
+    try:
+        if not campaign_id:
+            client = load_client(args.client)
+            campaign_id = client.campaign_id
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    logger.info(
+        "Duplicando campanha=%s status_option=%s dry-run=%s", campaign_id, args.status_option, args.dry_run,
+    )
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+
+    try:
+        result = duplicate_campaign(graph, campaign_id, status_option=args.status_option, dry_run=args.dry_run)
+    except RateLimitError as exc:
+        logger.error("Rate limit da Meta duplicando campanha %s: %s — aguarde e rode de novo.", campaign_id, exc)
+        return 1
+    except GraphError as exc:
+        logger.error("Erro duplicando campanha %s: %s", campaign_id, exc)
+        logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+        return 1
+
+    logger.info("Concluído: %s", json.dumps(result, ensure_ascii=False))
+    nova_campanha = result.get("copied_campaign_id")
+    if nova_campanha:
+        logger.info(
+            "Cópia criada: campaign_id=%s (status=%s). Agora ajuste orçamento/end_time dela com "
+            "campaign-update --campaign-id %s ... e só depois ative.",
+            nova_campanha, args.status_option, nova_campanha,
+        )
+    return 0
+
+
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
     if not args.bootstrap_config:
         logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
@@ -310,6 +374,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "campaign-update":
         return _run_campaign_update(args, logger)
+
+    if args.action == "campaign-duplicate":
+        return _run_campaign_duplicate(args, logger)
 
     if args.action == "geocheck":
         return _run_geocheck(args, logger)

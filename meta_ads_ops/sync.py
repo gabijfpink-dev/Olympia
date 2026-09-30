@@ -147,6 +147,24 @@ def update_campaign(
     return graph.post(campaign_id, params)
 
 
+def duplicate_campaign(
+    graph: GraphClient, campaign_id: str, status_option: str = "PAUSED", dry_run: bool = False,
+) -> dict[str, Any]:
+    """Duplica uma campanha inteira (adsets + anúncios + criativos) via
+    POST /{campaign_id}/copies. status_option='PAUSED' por padrão — a cópia
+    nasce pausada de propósito, pra dar tempo de ajustar orçamento/end_time
+    antes dela começar a gastar (senão ela nasce herdando o orçamento
+    diário/end_time originais, que não é o que se quer ao duplicar pra
+    trocar de orçamento)."""
+    params = {"status_option": status_option, "deep_copy": "true"}
+    if dry_run:
+        return {
+            "success": True, "dry_run": True, "campaign_id": campaign_id,
+            "params": params, "copied_campaign_id": "DRY_RUN_CAMPAIGN_COPY",
+        }
+    return graph.post(f"{campaign_id}/copies", params)
+
+
 def update_adsets_end_time(
     graph: GraphClient, campaign_id: str, end_time: str, dry_run: bool = False,
 ) -> list[dict[str, Any]]:
