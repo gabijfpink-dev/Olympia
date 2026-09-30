@@ -19,11 +19,18 @@ campanha na hora da criação, e precisar ser alinhado também):
     python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --dry-run
     python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --cascade-adsets
 
-Pra duplicar uma campanha inteira (adsets+anúncios+criativos), nascendo
-pausada de propósito — depois ajuste orçamento/end_time da cópia com
-campaign-update, e só então ative ela:
+Pra duplicar uma campanha pequena inteira (adsets+anúncios+criativos),
+nascendo pausada de propósito — depois ajuste orçamento/end_time da cópia
+com campaign-update, e só então ative ela:
     python -m meta_ads_ops.cli campaign-duplicate --campaign-id 120253168661690652 --config config_donato.py --dry-run
     python -m meta_ads_ops.cli campaign-duplicate --campaign-id 120253168661690652 --config config_donato.py
+
+Pra campanha com MUITAS cidades, a Meta não aceita cópia síncrona com
+adsets (limite: menos de 3 objetos no total) — use --shallow (só duplica a
+campanha vazia) e depois rode 'sync' com a mesma planilha, apontando
+campaign_id pra cópia nova, pra recriar os adsets/anúncios (reaproveita o
+cache de hash de imagem, sem reenviar nada):
+    python -m meta_ads_ops.cli campaign-duplicate --campaign-id 120253168661690652 --config config_donato.py --shallow
 
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
@@ -100,6 +107,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--status-option", default="PAUSED", choices=["PAUSED", "ACTIVE", "INHERITED_FROM_SOURCE"],
         help="Só pra 'campaign-duplicate': status da cópia recém-criada (padrão: PAUSED, pra dar "
         "tempo de ajustar orçamento/end_time antes dela gastar).",
+    )
+    parser.add_argument(
+        "--shallow", action="store_true",
+        help="Só pra 'campaign-duplicate': copia só a campanha (sem adsets/anúncios) — necessário "
+        "pra campanha com muitas cidades, já que a Meta só aceita cópia com adsets de forma "
+        "síncrona pra campanhas pequenas (limite: menos de 3 objetos no total). Depois de uma "
+        "cópia rasa, use 'sync' com a mesma planilha pra recriar os adsets na campanha nova.",
     )
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
@@ -297,13 +311,17 @@ def _run_campaign_duplicate(args: argparse.Namespace, logger: logging.Logger) ->
         return 1
 
     logger.info(
-        "Duplicando campanha=%s status_option=%s dry-run=%s", campaign_id, args.status_option, args.dry_run,
+        "Duplicando campanha=%s status_option=%s shallow=%s dry-run=%s",
+        campaign_id, args.status_option, args.shallow, args.dry_run,
     )
 
     graph = GraphClient(secrets.access_token, secrets.api_version)
 
     try:
-        result = duplicate_campaign(graph, campaign_id, status_option=args.status_option, dry_run=args.dry_run)
+        result = duplicate_campaign(
+            graph, campaign_id, status_option=args.status_option,
+            deep_copy=not args.shallow, dry_run=args.dry_run,
+        )
     except RateLimitError as exc:
         logger.error("Rate limit da Meta duplicando campanha %s: %s — aguarde e rode de novo.", campaign_id, exc)
         return 1

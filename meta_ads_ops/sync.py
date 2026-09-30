@@ -148,15 +148,20 @@ def update_campaign(
 
 
 def duplicate_campaign(
-    graph: GraphClient, campaign_id: str, status_option: str = "PAUSED", dry_run: bool = False,
+    graph: GraphClient, campaign_id: str, status_option: str = "PAUSED",
+    deep_copy: bool = True, dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Duplica uma campanha inteira (adsets + anúncios + criativos) via
-    POST /{campaign_id}/copies. status_option='PAUSED' por padrão — a cópia
-    nasce pausada de propósito, pra dar tempo de ajustar orçamento/end_time
-    antes dela começar a gastar (senão ela nasce herdando o orçamento
-    diário/end_time originais, que não é o que se quer ao duplicar pra
-    trocar de orçamento)."""
-    params = {"status_option": status_option, "deep_copy": "true"}
+    """Duplica uma campanha via POST /{campaign_id}/copies. status_option='PAUSED'
+    por padrão — a cópia nasce pausada de propósito, pra dar tempo de ajustar
+    orçamento/end_time antes dela começar a gastar.
+
+    deep_copy=True tenta copiar adsets+anúncios+criativos junto — a Meta só
+    aceita isso de forma síncrona pra campanhas pequenas (o limite documentado
+    é "menos de 3 objetos no total"). Pra campanha com muitas cidades, use
+    deep_copy=False (copia só a campanha vazia) e depois rode 'sync' com a
+    mesma planilha pra recriar os adsets/anúncios na campanha nova — reaproveita
+    o cache de hash de imagem, sem reenviar nada."""
+    params = {"status_option": status_option, "deep_copy": "true" if deep_copy else "false"}
     if dry_run:
         return {
             "success": True, "dry_run": True, "campaign_id": campaign_id,
