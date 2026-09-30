@@ -170,6 +170,35 @@ def duplicate_campaign(
     return graph.post(f"{campaign_id}/copies", params)
 
 
+def create_campaign_with_lifetime_budget(
+    graph: GraphClient, ad_account_id: str, like_campaign_id: str,
+    lifetime_budget_cents: int, end_time: str, status: str = "PAUSED", dry_run: bool = False,
+) -> dict[str, Any]:
+    """Cria uma campanha NOVA (não duplicada) já nascendo com orçamento
+    TOTAL, copiando nome/objetivo/categorias especiais de uma campanha
+    existente como referência. Necessário porque a Meta não permite trocar
+    orçamento diário por total (nem o contrário) numa campanha já
+    existente — nem uma recém-duplicada, que herda o tipo da original."""
+    origem = graph.get(
+        like_campaign_id, {"fields": "name,objective,special_ad_categories,bid_strategy"},
+    )
+    params: dict[str, Any] = {
+        "name": f"{origem.get('name', 'Campanha')} - Orçamento total",
+        "objective": origem.get("objective"),
+        "status": status,
+        "lifetime_budget": lifetime_budget_cents,
+        "end_time": end_time,
+    }
+    if origem.get("bid_strategy"):
+        params["bid_strategy"] = origem["bid_strategy"]
+    if origem.get("special_ad_categories"):
+        params["special_ad_categories"] = json.dumps(origem["special_ad_categories"])
+
+    if dry_run:
+        return {"success": True, "dry_run": True, "id": "DRY_RUN_CAMPAIGN_NEW", "params": params}
+    return graph.post(f"{ad_account_id}/campaigns", params)
+
+
 def update_adsets_end_time(
     graph: GraphClient, campaign_id: str, end_time: str, dry_run: bool = False,
 ) -> list[dict[str, Any]]:

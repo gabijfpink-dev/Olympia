@@ -32,6 +32,14 @@ campaign_id pra cópia nova, pra recriar os adsets/anúncios (reaproveita o
 cache de hash de imagem, sem reenviar nada):
     python -m meta_ads_ops.cli campaign-duplicate --campaign-id 120253168661690652 --config config_donato.py --shallow
 
+IMPORTANTE: se o objetivo de duplicar é trocar orçamento diário por total,
+NÃO use campaign-duplicate (a cópia herda o tipo de orçamento da original,
+e a Meta não deixa trocar depois). Use campaign-create-like: cria uma
+campanha NOVA já nascendo com orçamento total, copiando nome/objetivo da
+original como referência — depois rode 'sync' com a planilha pra popular:
+    python -m meta_ads_ops.cli campaign-create-like --like-campaign-id 120253168661690652 --config config_donato.py --end-time "2026-10-01T18:00:00-03:00" --lifetime-budget-cents 1147224 --dry-run
+    python -m meta_ads_ops.cli campaign-create-like --like-campaign-id 120253168661690652 --config config_donato.py --end-time "2026-10-01T18:00:00-03:00" --lifetime-budget-cents 1147224
+
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json
@@ -59,6 +67,7 @@ from .sync import (
     CampaignBootstrapper,
     CitySync,
     _buscar_cidade,
+    create_campaign_with_lifetime_budget,
     duplicate_campaign,
     update_adsets_end_time,
     update_campaign,
@@ -70,18 +79,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "action", choices=[
             "sync", "activate", "update-creative", "campaign-update", "campaign-duplicate",
-            "bootstrap", "geocheck", "instacheck",
+            "campaign-create-like", "bootstrap", "geocheck", "instacheck",
         ],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
         "update-creative: recria o criativo (link/texto/imagem) de cidades já com anúncio, a "
         "partir dos dados atuais da planilha, e troca a referência do anúncio pro criativo novo. "
         "campaign-update: define end_time e/ou troca orçamento diário por total, direto na campanha. "
         "campaign-duplicate: duplica campanha inteira (adsets+anúncios+criativos), pausada. "
+        "campaign-create-like: cria campanha NOVA já com orçamento total, copiando nome/objetivo "
+        "de outra como referência (use pra trocar orçamento diário->total sem o limite de cópia). "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
         "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
     )
     parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
+    parser.add_argument(
+        "--like-campaign-id", default=None,
+        help="Só pra 'campaign-create-like': ID da campanha existente pra copiar nome/objetivo/"
+        "categorias especiais como referência (a campanha nova não herda orçamento nem adsets dela).",
+    )
     parser.add_argument(
         "--end-time", default=None,
         help="Só pra 'campaign-update': data/hora de encerramento da campanha, ISO 8601 com fuso "
@@ -341,6 +357,56 @@ def _run_campaign_duplicate(args: argparse.Namespace, logger: logging.Logger) ->
     return 0
 
 
+def _run_campaign_create_like(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.like_campaign_id:
+        logger.error("--like-campaign-id é obrigatório pra 'campaign-create-like'")
+        return 1
+    if not args.end_time:
+        logger.error("--end-time é obrigatório pra 'campaign-create-like'")
+        return 1
+    if not args.lifetime_budget_cents or args.lifetime_budget_cents <= 0:
+        logger.error("--lifetime-budget-cents é obrigatório (positivo) pra 'campaign-create-like'")
+        return 1
+
+    try:
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    logger.info(
+        "Criando campanha nova (referência=%s) end_time=%s lifetime_budget_cents=%s dry-run=%s",
+        args.like_campaign_id, args.end_time, args.lifetime_budget_cents, args.dry_run,
+    )
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+
+    try:
+        result = create_campaign_with_lifetime_budget(
+            graph, secrets.ad_account_id, args.like_campaign_id,
+            args.lifetime_budget_cents, args.end_time,
+            status=args.status_option, dry_run=args.dry_run,
+        )
+    except RateLimitError as exc:
+        logger.error("Rate limit da Meta criando campanha: %s — aguarde e rode de novo.", exc)
+        return 1
+    except GraphError as exc:
+        logger.error("Erro criando campanha: %s", exc)
+        logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+        return 1
+
+    logger.info("Concluído: %s", json.dumps(result, ensure_ascii=False))
+    nova_campanha = result.get("id")
+    if nova_campanha:
+        logger.info(
+            "Campanha nova criada: campaign_id=%s (status=%s, orçamento total já definido). Agora "
+            "crie um clients/<nome>.json apontando pra ela (campaign_id=%s, mesmo model_adset_id da "
+            "campanha original) e rode 'sync' com a mesma planilha pra popular os adsets.",
+            nova_campanha, args.status_option, nova_campanha,
+        )
+    return 0
+
+
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
     if not args.bootstrap_config:
         logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
@@ -395,6 +461,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "campaign-duplicate":
         return _run_campaign_duplicate(args, logger)
+
+    if args.action == "campaign-create-like":
+        return _run_campaign_create_like(args, logger)
 
     if args.action == "geocheck":
         return _run_geocheck(args, logger)
