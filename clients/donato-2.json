@@ -1,0 +1,13 @@
+{
+  "name": "donato-2",
+  "campaign_id": "120253189235420652",
+  "model_adset_id": "120253168661710652",
+  "page_id": "257401334462190",
+  "instagram_actor_id": null,
+  "excel_file": "C:/MetaAPI/Donato/donato_lote_1.xlsx",
+  "images_folder": "C:/MetaAPI/Donato",
+  "authorization_category": "POLITICAL",
+  "ad_name": "01",
+  "fallback_state": "São Paulo",
+  "creative_type": "carousel"
+}
