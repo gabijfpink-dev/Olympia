@@ -159,6 +159,7 @@ def update_adsets_end_time(
     for adset in adsets:
         if not dry_run:
             graph.post(str(adset["id"]), {"end_time": end_time})
+            time.sleep(0.35)
         resultados.append({"adset_id": adset["id"], "name": adset.get("name"), "end_time": end_time})
     return resultados
 

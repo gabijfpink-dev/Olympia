@@ -41,7 +41,7 @@ import logging
 import sys
 
 from .clients import load_bootstrap, load_client, load_secrets
-from .graph import GraphClient, GraphError
+from .graph import GraphClient, GraphError, RateLimitError
 from .sync import CampaignBootstrapper, CitySync, _buscar_cidade, update_adsets_end_time, update_campaign
 
 
@@ -229,6 +229,9 @@ def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> in
 
     try:
         result = update_campaign(graph, campaign_id, params, dry_run=args.dry_run)
+    except RateLimitError as exc:
+        logger.error("Rate limit da Meta atualizando campanha %s: %s — aguarde e rode de novo.", campaign_id, exc)
+        return 1
     except GraphError as exc:
         logger.error("Erro atualizando campanha %s: %s", campaign_id, exc)
         logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
@@ -239,6 +242,12 @@ def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> in
     if args.cascade_adsets:
         try:
             adsets_result = update_adsets_end_time(graph, campaign_id, args.end_time, dry_run=args.dry_run)
+        except RateLimitError as exc:
+            logger.error(
+                "Rate limit da Meta atualizando adsets de %s: %s — aguarde e rode de novo (é seguro "
+                "repetir, só reaplica a mesma data nos que já foram atualizados).", campaign_id, exc,
+            )
+            return 1
         except GraphError as exc:
             logger.error("Erro atualizando end_time dos adsets de %s: %s", campaign_id, exc)
             logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
