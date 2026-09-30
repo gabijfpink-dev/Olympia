@@ -10,7 +10,7 @@ import requests
 from meta_ads_ops.clients import BootstrapConfig, ClientConfig, load_secrets
 from meta_ads_ops.graph import GraphClient, GraphError
 from meta_ads_ops.normalize import normalizar
-from meta_ads_ops.sync import CampaignBootstrapper, CitySync, _buscar_cidade
+from meta_ads_ops.sync import AdSetAdSync, CampaignBootstrapper, CitySync, _buscar_cidade
 
 
 class GraphClientRetryTests(unittest.TestCase):
@@ -271,6 +271,107 @@ class CitySyncTests(unittest.TestCase):
         creative_calls = [data for path, data in self.graph.posts if path.endswith("/adcreatives")]
         self.assertTrue(creative_calls)
         self.assertNotIn("authorization_category", creative_calls[-1])
+
+
+class AdSetAdSyncTests(unittest.TestCase):
+    """Modo 'vários anúncios num adset só' (campanha de reconhecimento com
+    criativos temáticos, em vez de um adset por cidade)."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        images_folder = Path(self.tmpdir.name) / "images"
+        images_folder.mkdir()
+        (images_folder / "tema-novo.jpg").write_bytes(b"fake-image-bytes")
+
+        excel_path = Path(self.tmpdir.name) / "planilha.xlsx"
+        pd.DataFrame(
+            [
+                {
+                    # FakeGraph já tem um anúncio chamado "01" por padrão.
+                    "name": "01",
+                    "url": "https://exemplo.com/ja-pronto",
+                    "image": "tema-pronto.jpg",
+                    "primary_text": "Texto",
+                    "headline": "Título",
+                    "description": "Descrição",
+                },
+                {
+                    "name": "Tema Novo",
+                    "url": "https://exemplo.com/tema-novo",
+                    "image": "tema-novo.jpg",
+                    "primary_text": "Texto novo",
+                    "headline": "Título novo",
+                    "description": "Descrição nova",
+                },
+            ]
+        ).to_excel(excel_path, index=False)
+
+        self.graph = FakeGraph()
+        self.sync = AdSetAdSync(
+            self.graph, ad_account_id="act_1", adset_id="ADSET_EXISTENTE",
+            page_id="PAGE_1", excel_file=str(excel_path), images_folder=str(images_folder),
+            dry_run=False, state_dir=str(Path(self.tmpdir.name) / ".state"),
+        )
+
+    def test_skips_ad_that_already_exists_by_name(self):
+        result = self.sync.sync()
+        self.assertIn("01", result.ja_prontos)
+
+    def test_creates_creative_and_ad_for_new_row_without_creating_adset(self):
+        result = self.sync.sync()
+
+        self.assertEqual(result.adsets_criados, [])
+        self.assertEqual(len(result.ads_criados), 1)
+        ad = result.ads_criados[0]
+        self.assertEqual(ad["city"], "Tema Novo")
+        self.assertEqual(ad["creative_id"], "CREATIVE_NOVO")
+        self.assertEqual(ad["ad_id"], "AD_NOVO")
+        self.assertEqual(result.erros, [])
+
+        ad_calls = [data for path, data in self.graph.posts if path.endswith("/ads")]
+        self.assertEqual(ad_calls[-1]["adset_id"], "ADSET_EXISTENTE")
+
+    def test_missing_image_reports_error_not_partial_ad(self):
+        # "01" já existe (é pulado); força um nome de imagem inexistente em
+        # "Tema Novo" pra cobrir o caminho de erro.
+        df = self.sync.load_spreadsheet()
+        df.loc[df["name"] == "Tema Novo", "image"] = "nao-existe.jpg"
+        # Reescreve a planilha só com a linha problemática pra isolar o teste.
+        excel_path = Path(self.tmpdir.name) / "planilha2.xlsx"
+        df.to_excel(excel_path, index=False)
+        sync2 = AdSetAdSync(
+            self.graph, ad_account_id="act_1", adset_id="ADSET_EXISTENTE",
+            page_id="PAGE_1", excel_file=str(excel_path), images_folder=self.sync.images_folder,
+            dry_run=False, state_dir=str(Path(self.tmpdir.name) / ".state3"),
+        )
+        result2 = sync2.sync()
+        self.assertEqual(len(result2.erros), 1)
+        self.assertEqual(result2.erros[0]["city"], "Tema Novo")
+        self.assertEqual(result2.erros[0]["step"], "image")
+
+    def test_activate_only_touches_ads_not_adset(self):
+        self.sync.sync()
+        result = self.sync.activate()
+
+        ativados = [c["city"] for c in result.ads_criados]
+        self.assertIn("Tema Novo", ativados)
+        # Nenhuma chamada de ativação deveria ter ido pro adset em si.
+        adset_status_calls = [
+            data for path, data in self.graph.posts
+            if path == "ADSET_EXISTENTE" and data.get("status") == "ACTIVE"
+        ]
+        self.assertEqual(adset_status_calls, [])
+
+    def test_dry_run_never_calls_post(self):
+        sync = AdSetAdSync(
+            self.graph, ad_account_id="act_1", adset_id="ADSET_EXISTENTE",
+            page_id="PAGE_1", excel_file=self.sync.excel_file, images_folder=self.sync.images_folder,
+            dry_run=True, state_dir=str(Path(self.tmpdir.name) / ".state-dry"),
+        )
+        sync.sync()
+        self.assertEqual(self.graph.posts, [])
 
 
 class UpdateCreativeTests(unittest.TestCase):

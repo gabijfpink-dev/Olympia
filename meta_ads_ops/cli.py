@@ -52,6 +52,13 @@ resolve):
 Pra achar o instagram_actor_id CERTO pra usar num criativo (o ID do
 Business Settings costuma ser diferente do que a API de anúncios aceita):
     python -m meta_ads_ops.cli instacheck --config config_1818.py --client clients/leandro-grass.json
+
+Pra campanha de RECONHECIMENTO com vários anúncios diferentes dentro de UM
+adset só (em vez de um adset por cidade) — use sync/activate com --adset-id
+em vez de --client:
+    python -m meta_ads_ops.cli sync --adset-id 120253168661710652 --page-id 153682945207770 --excel-file C:/MetaAPI/LeandroGrass/temas.xlsx --images-folder C:/MetaAPI/LeandroGrass/Temas --config config_1818.py --dry-run
+    python -m meta_ads_ops.cli sync --adset-id 120253168661710652 --page-id 153682945207770 --excel-file C:/MetaAPI/LeandroGrass/temas.xlsx --images-folder C:/MetaAPI/LeandroGrass/Temas --config config_1818.py
+    python -m meta_ads_ops.cli activate --adset-id 120253168661710652 --config config_1818.py
 """
 
 from __future__ import annotations
@@ -64,6 +71,7 @@ import sys
 from .clients import load_bootstrap, load_client, load_secrets
 from .graph import GraphClient, GraphError, RateLimitError
 from .sync import (
+    AdSetAdSync,
     CampaignBootstrapper,
     CitySync,
     _buscar_cidade,
@@ -93,6 +101,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
     )
     parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
+    parser.add_argument(
+        "--adset-id", default=None,
+        help="Pra 'sync'/'activate' no modo 'vários anúncios num adset só': ID do adset já "
+        "existente (usa em vez de --client). Precisa junto de --page-id, --excel-file e "
+        "--images-folder.",
+    )
+    parser.add_argument(
+        "--page-id", default=None,
+        help="Só pro modo --adset-id: ID da página do Facebook pro criativo.",
+    )
+    parser.add_argument(
+        "--excel-file", default=None,
+        help="Só pro modo --adset-id: planilha com colunas name,url,image,primary_text,headline,"
+        "description (uma linha por anúncio).",
+    )
+    parser.add_argument(
+        "--images-folder", default=None,
+        help="Só pro modo --adset-id: pasta com as imagens referenciadas na coluna 'image'.",
+    )
+    parser.add_argument(
+        "--instagram-actor-id", default=None,
+        help="Só pro modo --adset-id: instagram_actor_id opcional pro criativo (veja 'instacheck').",
+    )
     parser.add_argument(
         "--like-campaign-id", default=None,
         help="Só pra 'campaign-create-like': ID da campanha existente pra copiar nome/objetivo/"
@@ -471,8 +502,55 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "instacheck":
         return _run_instacheck(args, logger)
 
+    if args.adset_id:
+        if args.action == "update-creative":
+            logger.error("update-creative não existe no modo --adset-id (recrie a planilha e rode sync de novo)")
+            return 1
+        missing = [
+            n for n, v in [("--page-id", args.page_id), ("--excel-file", args.excel_file),
+                            ("--images-folder", args.images_folder)]
+            if not v
+        ]
+        if missing:
+            logger.error("Faltando %s (obrigatórios junto de --adset-id)", ", ".join(missing))
+            return 1
+
+        try:
+            secrets = load_secrets(args.config)
+        except (FileNotFoundError, ValueError) as exc:
+            logger.error(str(exc))
+            return 1
+
+        logger.info("Adset=%s dry-run=%s (modo: vários anúncios num adset só)", args.adset_id, args.dry_run)
+
+        graph = GraphClient(secrets.access_token, secrets.api_version)
+        ad_sync = AdSetAdSync(
+            graph, secrets.ad_account_id, args.adset_id, args.page_id, args.excel_file, args.images_folder,
+            instagram_actor_id=args.instagram_actor_id, dry_run=args.dry_run,
+        )
+
+        try:
+            result = ad_sync.sync() if args.action == "sync" else ad_sync.activate()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Execução interrompida: %s", exc)
+            return 1
+
+        summary = result.as_dict()
+        logger.info(
+            "Concluído. ads=%d já prontos=%d erros=%d",
+            len(summary["ads_criados"]), summary["ja_prontos"], len(summary["erros"]),
+        )
+        output_json = json.dumps(summary, indent=2, ensure_ascii=False)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output_json)
+            logger.info("Resumo salvo em %s", args.output)
+        else:
+            print(output_json)
+        return 1 if summary["erros"] else 0
+
     if not args.client:
-        logger.error("--client é obrigatório pra sync/activate")
+        logger.error("--client ou --adset-id é obrigatório pra sync/activate")
         return 1
 
     try:

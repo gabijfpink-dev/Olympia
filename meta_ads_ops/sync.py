@@ -697,6 +697,213 @@ class CitySync:
         return result
 
 
+REQUIRED_COLUMNS_ADSET_ADS = ["name", "url", "image", "primary_text", "headline", "description"]
+
+
+class AdSetAdSync:
+    """Garante, para cada linha da planilha: imagem com hash -> criativo ->
+    anúncio, todos dentro de UM adset já existente (em vez de um adset por
+    linha/cidade). Uso: campanha de reconhecimento com vários criativos
+    temáticos rodando no mesmo público, em vez de segmentação geográfica.
+
+    Idempotente igual o CitySync: o que já existe é decidido consultando a
+    API ao vivo (anúncios do adset, por nome) — rodar 'sync' de novo é
+    seguro, cidade/tema que já tem anúncio é pulado."""
+
+    def __init__(
+        self,
+        graph: GraphClient,
+        ad_account_id: str,
+        adset_id: str,
+        page_id: str,
+        excel_file: str,
+        images_folder: str,
+        instagram_actor_id: str | None = None,
+        authorization_category: str | None = None,
+        ad_name_suffix: str = "",
+        cache_name: str = "adset-ads",
+        dry_run: bool = False,
+        state_dir: str = ".state",
+    ):
+        self.graph = graph
+        self.ad_account_id = ad_account_id
+        self.adset_id = adset_id
+        self.page_id = page_id
+        self.excel_file = excel_file
+        self.images_folder = images_folder
+        self.instagram_actor_id = instagram_actor_id
+        self.authorization_category = authorization_category
+        self.ad_name_suffix = ad_name_suffix
+        self.dry_run = dry_run
+        self._image_cache_path = Path(state_dir) / f"{cache_name}_image_hashes.json"
+        self._image_cache = self._load_image_cache()
+        self._dry_run_counter = 0
+
+    def load_spreadsheet(self) -> pd.DataFrame:
+        df = pd.read_excel(self.excel_file)
+        missing = [c for c in REQUIRED_COLUMNS_ADSET_ADS if c not in df.columns]
+        if missing:
+            raise ValueError(f"Planilha '{self.excel_file}' sem colunas obrigatórias: {missing}")
+        df = df.dropna(subset=["name"]).copy()
+        df["name"] = df["name"].astype(str).str.strip()
+        return df
+
+    def list_existing_ads(self) -> dict[str, dict[str, Any]]:
+        ads = self.graph.paginate(f"{self.adset_id}/ads", {"fields": "id,name,status"})
+        return {normalizar(a["name"]): a for a in ads}
+
+    def _load_image_cache(self) -> dict[str, str]:
+        if self._image_cache_path.is_file():
+            try:
+                cache = json.loads(self._image_cache_path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                logger.warning("Cache de hash de imagem corrompido, ignorando: %s", self._image_cache_path)
+                return {}
+            limpo = {k: v for k, v in cache.items() if not str(v).startswith("DRY_RUN_HASH::")}
+            return limpo
+        return {}
+
+    def _save_image_cache(self) -> None:
+        self._image_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._image_cache_path.write_text(
+            json.dumps(self._image_cache, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def resolve_image_hash(self, image_name: str) -> str | None:
+        if image_name in self._image_cache:
+            return self._image_cache[image_name]
+
+        path = os.path.join(self.images_folder, image_name)
+        if not os.path.isfile(path):
+            return None
+
+        if self.dry_run:
+            return f"DRY_RUN_HASH::{image_name}"
+
+        resp = self.graph.post_image(f"{self.ad_account_id}/adimages", path)
+        imagens = resp.get("images") or {}
+        if not imagens:
+            return None
+        image_hash = list(imagens.values())[0]["hash"]
+
+        self._image_cache[image_name] = image_hash
+        self._save_image_cache()
+        return image_hash
+
+    def _create_creative(self, nome_ad: str, row: pd.Series, image_hash: str) -> dict[str, Any]:
+        url = str(row["url"]).strip()
+        object_story_spec: dict[str, Any] = {
+            "page_id": self.page_id,
+            "link_data": {
+                "link": url,
+                "message": str(row["primary_text"]).strip(),
+                "name": str(row["headline"]).strip(),
+                "description": str(row["description"]).strip(),
+                "image_hash": image_hash,
+                "call_to_action": {"type": "LEARN_MORE", "value": {"link": url}},
+            },
+        }
+        if self.instagram_actor_id:
+            object_story_spec["instagram_actor_id"] = self.instagram_actor_id
+
+        params: dict[str, Any] = {
+            "name": f"{nome_ad} Creative",
+            "object_story_spec": json.dumps(object_story_spec, ensure_ascii=False),
+        }
+        if self.authorization_category:
+            params["authorization_category"] = self.authorization_category
+
+        if self.dry_run:
+            self._dry_run_counter += 1
+            return {"id": f"DRY_RUN_CREATIVE_{self._dry_run_counter}"}
+        return self.graph.post(f"{self.ad_account_id}/adcreatives", params)
+
+    def _create_ad(self, creative_id: str, nome_ad: str) -> dict[str, Any]:
+        params = {
+            "name": nome_ad,
+            "adset_id": self.adset_id,
+            "creative": json.dumps({"creative_id": creative_id}),
+            "status": "PAUSED",
+        }
+        if self.dry_run:
+            self._dry_run_counter += 1
+            return {"id": f"DRY_RUN_AD_{self._dry_run_counter}"}
+        return self.graph.post(f"{self.ad_account_id}/ads", params)
+
+    def sync(self) -> SyncResult:
+        result = SyncResult()
+
+        df = self.load_spreadsheet()
+        existing_ads = self.list_existing_ads()
+
+        for _, row in df.iterrows():
+            nome_ad = f"{str(row['name']).strip()}{self.ad_name_suffix}"
+            chave = normalizar(nome_ad)
+
+            if chave in existing_ads:
+                result.ja_prontos.append(nome_ad)
+                continue
+
+            try:
+                image_hash = self.resolve_image_hash(str(row["image"]).strip())
+                if not image_hash:
+                    result.erros.append({"city": nome_ad, "step": "image", "error": "imagem/hash ausente"})
+                    continue
+
+                creative = self._create_creative(nome_ad, row, image_hash)
+                ad = self._create_ad(creative["id"], nome_ad)
+                existing_ads[chave] = {"id": ad["id"], "name": nome_ad, "status": "PAUSED"}
+                result.ads_criados.append(
+                    {"city": nome_ad, "creative_id": creative["id"], "ad_id": ad["id"]}
+                )
+                logger.info("Anúncio criado: %s -> %s", nome_ad, ad["id"])
+                time.sleep(0.35)
+
+            except GraphError as exc:
+                logger.error("Erro no anúncio %s: %s", nome_ad, exc)
+                logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+                result.erros.append({"city": nome_ad, "error": str(exc), "raw": exc.error})
+
+        return result
+
+    def activate(self) -> SyncResult:
+        """Ativa (status ACTIVE) cada anúncio da planilha que ainda não
+        estiver ativo. Não mexe no adset — esse já existe e foi ativado
+        manualmente (ou via campaign-update), já que aqui é um só,
+        compartilhado por todos os anúncios."""
+        result = SyncResult()
+
+        df = self.load_spreadsheet()
+        existing_ads = self.list_existing_ads()
+
+        for _, row in df.iterrows():
+            nome_ad = f"{str(row['name']).strip()}{self.ad_name_suffix}"
+            chave = normalizar(nome_ad)
+
+            ad = existing_ads.get(chave)
+            if ad is None:
+                result.erros.append({"city": nome_ad, "step": "ad", "error": "anúncio não existe ainda"})
+                continue
+
+            try:
+                if str(ad.get("status", "")).upper() != "ACTIVE":
+                    if not self.dry_run:
+                        self.graph.post(str(ad["id"]), {"status": "ACTIVE"})
+                    ad["status"] = "ACTIVE"
+                    result.ads_criados.append({"city": nome_ad, "ad_id": ad["id"], "acao": "ativado"})
+                    logger.info("Anúncio ativado: %s -> %s", nome_ad, ad["id"])
+                    time.sleep(0.35)
+                else:
+                    result.ja_prontos.append(nome_ad)
+
+            except GraphError as exc:
+                logger.error("Erro ativando %s: %s", nome_ad, exc)
+                logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+                result.erros.append({"city": nome_ad, "error": str(exc), "raw": exc.error})
+
+        return result
+
+
 class CampaignBootstrapper:
     """Cria do zero: campanha (CBO) -> 1º adset -> imagem -> criativo -> anúncio.
 
