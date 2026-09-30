@@ -511,13 +511,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "update-creative":
             logger.error("update-creative não existe no modo --adset-id (recrie a planilha e rode sync de novo)")
             return 1
-        missing = [
-            n for n, v in [("--page-id", args.page_id), ("--excel-file", args.excel_file),
-                            ("--images-folder", args.images_folder)]
-            if not v
-        ]
+        # activate só lê a planilha pra saber os nomes dos anúncios — não
+        # precisa de page-id/images-folder (isso só é usado na criação).
+        obrigatorios = [("--excel-file", args.excel_file)]
+        if args.action == "sync":
+            obrigatorios += [("--page-id", args.page_id), ("--images-folder", args.images_folder)]
+        missing = [n for n, v in obrigatorios if not v]
         if missing:
-            logger.error("Faltando %s (obrigatórios junto de --adset-id)", ", ".join(missing))
+            logger.error("Faltando %s (obrigatórios junto de --adset-id pra '%s')", ", ".join(missing), args.action)
             return 1
 
         try:
