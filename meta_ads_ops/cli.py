@@ -125,6 +125,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Só pro modo --adset-id: instagram_actor_id opcional pro criativo (veja 'instacheck').",
     )
     parser.add_argument(
+        "--authorization-category", default=None,
+        help="Só pro modo --adset-id: 'POLITICAL' pra campanha eleitoral (obrigatório se a campanha "
+        "tiver special_ad_categories de eleições/política, senão a Meta rejeita o criativo).",
+    )
+    parser.add_argument(
         "--like-campaign-id", default=None,
         help="Só pra 'campaign-create-like': ID da campanha existente pra copiar nome/objetivo/"
         "categorias especiais como referência (a campanha nova não herda orçamento nem adsets dela).",
@@ -526,7 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         graph = GraphClient(secrets.access_token, secrets.api_version)
         ad_sync = AdSetAdSync(
             graph, secrets.ad_account_id, args.adset_id, args.page_id, args.excel_file, args.images_folder,
-            instagram_actor_id=args.instagram_actor_id, dry_run=args.dry_run,
+            instagram_actor_id=args.instagram_actor_id, authorization_category=args.authorization_category,
+            dry_run=args.dry_run,
         )
 
         try:
