@@ -59,6 +59,13 @@ em vez de --client:
     python -m meta_ads_ops.cli sync --adset-id 120253168661710652 --page-id 153682945207770 --excel-file C:/MetaAPI/LeandroGrass/temas.xlsx --images-folder C:/MetaAPI/LeandroGrass/Temas --config config_1818.py --dry-run
     python -m meta_ads_ops.cli sync --adset-id 120253168661710652 --page-id 153682945207770 --excel-file C:/MetaAPI/LeandroGrass/temas.xlsx --images-folder C:/MetaAPI/LeandroGrass/Temas --config config_1818.py
     python -m meta_ads_ops.cli activate --adset-id 120253168661710652 --config config_1818.py
+
+Pra pausar, numa OUTRA campanha, os adsets+anúncios cujo nome bate com uma
+lista (ex.: mesmos temas que migraram pra uma campanha nova, evitando
+rodar duplicado) — reaproveita a coluna "name" de uma planilha, ou lista
+direto com --names:
+    python -m meta_ads_ops.cli pause-by-name --campaign-id 120250289351650061 --excel-file C:/MetaAPI/LeandroGrass/leandro_grass_temas.xlsx --config config_1818.py --dry-run
+    python -m meta_ads_ops.cli pause-by-name --campaign-id 120250289351650061 --excel-file C:/MetaAPI/LeandroGrass/leandro_grass_temas.xlsx --config config_1818.py
 """
 
 from __future__ import annotations
@@ -77,6 +84,7 @@ from .sync import (
     _buscar_cidade,
     create_campaign_with_lifetime_budget,
     duplicate_campaign,
+    pause_adsets_by_name,
     update_adsets_end_time,
     update_campaign,
 )
@@ -87,7 +95,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "action", choices=[
             "sync", "activate", "update-creative", "campaign-update", "campaign-duplicate",
-            "campaign-create-like", "bootstrap", "geocheck", "instacheck",
+            "campaign-create-like", "pause-by-name", "bootstrap", "geocheck", "instacheck",
         ],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
         "update-creative: recria o criativo (link/texto/imagem) de cidades já com anúncio, a "
@@ -96,6 +104,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "campaign-duplicate: duplica campanha inteira (adsets+anúncios+criativos), pausada. "
         "campaign-create-like: cria campanha NOVA já com orçamento total, copiando nome/objetivo "
         "de outra como referência (use pra trocar orçamento diário->total sem o limite de cópia). "
+        "pause-by-name: pausa adsets+anúncios de uma campanha cujo nome bate com uma lista "
+        "(ex.: mesmos temas que migraram pra outra campanha). "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
         "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
@@ -443,6 +453,65 @@ def _run_campaign_create_like(args: argparse.Namespace, logger: logging.Logger) 
     return 0
 
 
+def _run_pause_by_name(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.client and not args.campaign_id:
+        logger.error("--client ou --campaign-id é obrigatório pra 'pause-by-name'")
+        return 1
+    if not args.names and not args.excel_file:
+        logger.error("--names ou --excel-file é obrigatório pra 'pause-by-name' (lista de nomes a pausar)")
+        return 1
+
+    campaign_id = args.campaign_id
+    try:
+        if not campaign_id:
+            client = load_client(args.client)
+            campaign_id = client.campaign_id
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    if args.names:
+        nomes = [n.strip() for n in args.names.split(",") if n.strip()]
+    else:
+        try:
+            import pandas as pd
+            df = pd.read_excel(args.excel_file)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            logger.error(str(exc))
+            return 1
+        if "name" not in df.columns:
+            logger.error("Planilha '%s' precisa ter coluna 'name'", args.excel_file)
+            return 1
+        nomes = [str(n).strip() for n in df["name"].dropna()]
+
+    logger.info("Campanha=%s %d nome(s) a pausar dry-run=%s", campaign_id, len(nomes), args.dry_run)
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+
+    try:
+        result = pause_adsets_by_name(graph, campaign_id, nomes, dry_run=args.dry_run)
+    except RateLimitError as exc:
+        logger.error("Rate limit da Meta pausando %s: %s — aguarde e rode de novo (é seguro repetir).", campaign_id, exc)
+        return 1
+    except GraphError as exc:
+        logger.error("Erro pausando %s: %s", campaign_id, exc)
+        logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+        return 1
+
+    logger.info(
+        "Concluído. pausados=%d não encontrados=%d", len(result["pausados"]), len(result["nao_encontrados"]),
+    )
+    output_json = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output_json)
+        logger.info("Resumo salvo em %s", args.output)
+    else:
+        print(output_json)
+    return 0
+
+
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
     if not args.bootstrap_config:
         logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
@@ -500,6 +569,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "campaign-create-like":
         return _run_campaign_create_like(args, logger)
+
+    if args.action == "pause-by-name":
+        return _run_pause_by_name(args, logger)
 
     if args.action == "geocheck":
         return _run_geocheck(args, logger)

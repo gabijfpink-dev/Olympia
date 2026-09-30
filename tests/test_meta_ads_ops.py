@@ -10,7 +10,7 @@ import requests
 from meta_ads_ops.clients import BootstrapConfig, ClientConfig, load_secrets
 from meta_ads_ops.graph import GraphClient, GraphError
 from meta_ads_ops.normalize import normalizar
-from meta_ads_ops.sync import AdSetAdSync, CampaignBootstrapper, CitySync, _buscar_cidade
+from meta_ads_ops.sync import AdSetAdSync, CampaignBootstrapper, CitySync, _buscar_cidade, pause_adsets_by_name
 
 
 class GraphClientRetryTests(unittest.TestCase):
@@ -372,6 +372,48 @@ class AdSetAdSyncTests(unittest.TestCase):
         )
         sync.sync()
         self.assertEqual(self.graph.posts, [])
+
+
+class PauseByNameTests(unittest.TestCase):
+    """pause_adsets_by_name: pausa adset+anúncios de uma campanha cujo nome
+    bate com uma lista, usado quando uma campanha nova substitui parte de
+    uma campanha antiga (ex.: mesmos temas migrando de campanha)."""
+
+    def test_pauses_matching_adset_and_its_ads_case_and_accent_insensitive(self):
+        graph = FakeGraph()
+        graph.adsets[0]["status"] = "ACTIVE"
+        graph.ads[0]["status"] = "ACTIVE"
+
+        result = pause_adsets_by_name(graph, "CAMPANHA_1", ["cidade pronta"], dry_run=False)
+
+        self.assertEqual(len(result["pausados"]), 2)  # adset + anúncio
+        self.assertEqual(result["nao_encontrados"], [])
+        self.assertEqual(graph.adsets[0]["status"], "PAUSED")
+        self.assertEqual(graph.ads[0]["status"], "PAUSED")
+
+    def test_reports_names_not_found_without_touching_anything(self):
+        graph = FakeGraph()
+        result = pause_adsets_by_name(graph, "CAMPANHA_1", ["Tema Inexistente"], dry_run=False)
+
+        self.assertEqual(result["pausados"], [])
+        self.assertEqual(result["nao_encontrados"], [_normalizar("Tema Inexistente")])
+        self.assertEqual(graph.posts, [])
+
+    def test_already_paused_adset_is_not_posted_again(self):
+        graph = FakeGraph()
+        # adset e anúncio já nascem PAUSED no fixture padrão.
+        result = pause_adsets_by_name(graph, "CAMPANHA_1", ["Cidade Pronta"], dry_run=False)
+
+        self.assertEqual(result["pausados"], [])
+        self.assertEqual(graph.posts, [])
+
+    def test_dry_run_never_calls_post(self):
+        graph = FakeGraph()
+        graph.adsets[0]["status"] = "ACTIVE"
+        result = pause_adsets_by_name(graph, "CAMPANHA_1", ["Cidade Pronta"], dry_run=True)
+
+        self.assertEqual(graph.posts, [])
+        self.assertEqual(graph.adsets[0]["status"], "ACTIVE")
 
 
 class UpdateCreativeTests(unittest.TestCase):

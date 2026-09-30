@@ -216,6 +216,50 @@ def update_adsets_end_time(
     return resultados
 
 
+def pause_adsets_by_name(
+    graph: GraphClient, campaign_id: str, names: list[str], dry_run: bool = False,
+) -> dict[str, Any]:
+    """Pausa (status PAUSED) os adsets de uma campanha cujo nome bate com
+    algum da lista dada (comparação por normalizar(): ignora acento/
+    maiúscula), junto com os anúncios de cada um. Usado quando uma
+    campanha nova substitui parte do que uma campanha antiga fazia (ex.:
+    mesmos temas migrando pra uma campanha de reconhecimento), sem mexer
+    nos adsets da campanha antiga que não têm substituto."""
+    alvo = {normalizar(n) for n in names}
+    adsets = graph.paginate(f"{campaign_id}/adsets", {"fields": "id,name,status"})
+    ads = graph.paginate(f"{campaign_id}/ads", {"fields": "id,name,status,adset_id"})
+    ads_by_adset: dict[str, list[dict[str, Any]]] = {}
+    for ad in ads:
+        ads_by_adset.setdefault(str(ad["adset_id"]), []).append(ad)
+
+    pausados: list[dict[str, Any]] = []
+    encontrados: set[str] = set()
+
+    for adset in adsets:
+        chave = normalizar(adset["name"])
+        if chave not in alvo:
+            continue
+        encontrados.add(chave)
+
+        if str(adset.get("status", "")).upper() != "PAUSED":
+            if not dry_run:
+                graph.post(str(adset["id"]), {"status": "PAUSED"})
+                time.sleep(0.35)
+            pausados.append({"name": adset["name"], "id": adset["id"], "tipo": "adset"})
+            logger.info("Adset pausado: %s -> %s", adset["name"], adset["id"])
+
+        for ad in ads_by_adset.get(str(adset["id"]), []):
+            if str(ad.get("status", "")).upper() != "PAUSED":
+                if not dry_run:
+                    graph.post(str(ad["id"]), {"status": "PAUSED"})
+                    time.sleep(0.35)
+                pausados.append({"name": adset["name"], "id": ad["id"], "tipo": "ad"})
+                logger.info("Anúncio pausado: %s -> %s", adset["name"], ad["id"])
+
+    nao_encontrados = sorted(alvo - encontrados)
+    return {"pausados": pausados, "nao_encontrados": nao_encontrados}
+
+
 @dataclass
 class SyncResult:
     adsets_criados: list[dict[str, Any]] = field(default_factory=list)
