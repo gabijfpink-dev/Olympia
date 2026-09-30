@@ -12,6 +12,11 @@ com o dado certo (ex.: coluna "url") e rode:
     python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json --dry-run
     python -m meta_ads_ops.cli update-creative --client clients/rui-falcao.json
 
+Pra definir data de encerramento e/ou trocar orçamento diário por total
+numa campanha que já existe (não mexe em adset/anúncio):
+    python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00" --dry-run
+    python -m meta_ads_ops.cli campaign-update --client clients/donato.json --config config_donato.py --end-time "2026-10-01T22:00:00-03:00"
+
 Pra criar a campanha do zero (conta nova, sem campanha ainda):
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json --dry-run
     python -m meta_ads_ops.cli bootstrap --bootstrap-config clients/leandro-grass.bootstrap.json
@@ -35,21 +40,32 @@ import sys
 
 from .clients import load_bootstrap, load_client, load_secrets
 from .graph import GraphClient, GraphError
-from .sync import CampaignBootstrapper, CitySync, _buscar_cidade
+from .sync import CampaignBootstrapper, CitySync, _buscar_cidade, update_campaign
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "action", choices=["sync", "activate", "update-creative", "bootstrap", "geocheck", "instacheck"],
+        "action", choices=["sync", "activate", "update-creative", "campaign-update", "bootstrap", "geocheck", "instacheck"],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
         "update-creative: recria o criativo (link/texto/imagem) de cidades já com anúncio, a "
         "partir dos dados atuais da planilha, e troca a referência do anúncio pro criativo novo. "
+        "campaign-update: define end_time e/ou troca orçamento diário por total, direto na campanha. "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
         "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
     )
     parser.add_argument("--client", default=None, help="Caminho do JSON de configuração do cliente (obrigatório pra sync/activate)")
+    parser.add_argument(
+        "--end-time", default=None,
+        help="Só pra 'campaign-update': data/hora de encerramento da campanha, ISO 8601 com fuso "
+        "(ex.: '2026-10-01T22:00:00-03:00').",
+    )
+    parser.add_argument(
+        "--lifetime-budget-cents", type=int, default=None,
+        help="Só pra 'campaign-update': orçamento TOTAL da campanha em centavos, substituindo o "
+        "diário (exige --end-time — a Meta não aceita lifetime_budget sem data de encerramento).",
+    )
     parser.add_argument("--bootstrap-config", default=None, help="Caminho do JSON de bootstrap (obrigatório pra bootstrap)")
     parser.add_argument("--names", default=None, help="Nomes separados por vírgula pra testar (obrigatório pra 'geocheck')")
     parser.add_argument(
@@ -163,6 +179,49 @@ def _run_instacheck(args: argparse.Namespace, logger: logging.Logger) -> int:
     return 0
 
 
+def _run_campaign_update(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.client:
+        logger.error("--client é obrigatório pra 'campaign-update' (usa o campaign_id do cliente)")
+        return 1
+    if not args.end_time:
+        logger.error("--end-time é obrigatório pra 'campaign-update' (ex.: '2026-10-01T22:00:00-03:00')")
+        return 1
+    if args.lifetime_budget_cents is not None and args.lifetime_budget_cents <= 0:
+        logger.error("--lifetime-budget-cents precisa ser positivo")
+        return 1
+
+    try:
+        client = load_client(args.client)
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    params: dict = {"end_time": args.end_time}
+    if args.lifetime_budget_cents is not None:
+        # A Meta não aceita lifetime_budget e daily_budget juntos numa campanha
+        # CBO — precisa limpar o diário explicitamente ao setar o total.
+        params["lifetime_budget"] = args.lifetime_budget_cents
+        params["daily_budget"] = ""
+
+    logger.info(
+        "Cliente=%s campanha=%s end_time=%s lifetime_budget_cents=%s dry-run=%s",
+        client.name, client.campaign_id, args.end_time, args.lifetime_budget_cents, args.dry_run,
+    )
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+
+    try:
+        result = update_campaign(graph, client.campaign_id, params, dry_run=args.dry_run)
+    except GraphError as exc:
+        logger.error("Erro atualizando campanha %s: %s", client.campaign_id, exc)
+        logger.error("Detalhe bruto da API: %s", json.dumps(exc.error, ensure_ascii=False))
+        return 1
+
+    logger.info("Concluído: %s", json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
     if not args.bootstrap_config:
         logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
@@ -211,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "bootstrap":
         return _run_bootstrap(args, logger)
+
+    if args.action == "campaign-update":
+        return _run_campaign_update(args, logger)
 
     if args.action == "geocheck":
         return _run_geocheck(args, logger)

@@ -136,6 +136,17 @@ def _buscar_estado(graph: GraphClient, nome_estado: str) -> dict[str, Any] | Non
     return encontrado
 
 
+def update_campaign(
+    graph: GraphClient, campaign_id: str, params: dict[str, Any], dry_run: bool = False,
+) -> dict[str, Any]:
+    """Atualiza campos direto na campanha (ex.: end_time, lifetime_budget) —
+    usado pra definir data de encerramento ou trocar orçamento diário por
+    total. Não mexe em adset/anúncio."""
+    if dry_run:
+        return {"success": True, "dry_run": True, "campaign_id": campaign_id, "params": params}
+    return graph.post(campaign_id, params)
+
+
 @dataclass
 class SyncResult:
     adsets_criados: list[dict[str, Any]] = field(default_factory=list)
