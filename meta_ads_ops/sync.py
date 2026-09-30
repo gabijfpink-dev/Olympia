@@ -260,6 +260,128 @@ def pause_adsets_by_name(
     return {"pausados": pausados, "nao_encontrados": nao_encontrados}
 
 
+def add_ads_to_adsets_by_name(
+    graph: GraphClient,
+    campaign_id: str,
+    ad_account_id: str,
+    page_id: str,
+    df: pd.DataFrame,
+    images_folder: str,
+    ad_name: str = "Reconhecimento",
+    instagram_actor_id: str | None = None,
+    authorization_category: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Adiciona um anúncio NOVO (sem mexer no que já está rodando) em cada
+    adset de uma campanha cujo nome bate com a coluna 'name' de uma linha
+    da planilha (comparação por normalizar()). Linha sem adset
+    correspondente é só reportada, não é erro — útil pra reaproveitar a
+    mesma planilha de uma campanha de reconhecimento (a maioria das linhas
+    não bate com nome de adset de outra campanha, e tudo bem).
+
+    Idempotente: se o adset já tem um anúncio com esse ad_name, pula (não
+    cria duplicado)."""
+    required = ["name", "url", "image", "primary_text", "headline", "description"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Planilha sem colunas obrigatórias: {missing}")
+
+    adsets = graph.paginate(f"{campaign_id}/adsets", {"fields": "id,name"})
+    by_name = {normalizar(a["name"]): a for a in adsets}
+
+    ads = graph.paginate(f"{campaign_id}/ads", {"fields": "id,name,adset_id"})
+    nomes_existentes_por_adset: dict[str, set[str]] = {}
+    for ad in ads:
+        nomes_existentes_por_adset.setdefault(str(ad["adset_id"]), set()).add(normalizar(ad.get("name", "")))
+
+    image_cache: dict[str, str] = {}
+
+    def resolve_hash(image_name: str) -> str | None:
+        if image_name in image_cache:
+            return image_cache[image_name]
+        path = os.path.join(images_folder, image_name)
+        if not os.path.isfile(path):
+            return None
+        if dry_run:
+            return f"DRY_RUN_HASH::{image_name}"
+        resp = graph.post_image(f"{ad_account_id}/adimages", path)
+        imagens = resp.get("images") or {}
+        if not imagens:
+            return None
+        image_hash = list(imagens.values())[0]["hash"]
+        image_cache[image_name] = image_hash
+        return image_hash
+
+    criados: list[dict[str, Any]] = []
+    ja_prontos: list[str] = []
+    nao_encontrados: list[str] = []
+    erros: list[dict[str, Any]] = []
+
+    for _, row in df.iterrows():
+        nome_linha = str(row["name"]).strip()
+        adset = by_name.get(normalizar(nome_linha))
+        if not adset:
+            nao_encontrados.append(nome_linha)
+            continue
+
+        if normalizar(ad_name) in nomes_existentes_por_adset.get(str(adset["id"]), set()):
+            ja_prontos.append(nome_linha)
+            continue
+
+        image_hash = resolve_hash(str(row["image"]).strip())
+        if not image_hash:
+            erros.append({"name": nome_linha, "error": "imagem/hash ausente"})
+            continue
+
+        url = str(row["url"]).strip()
+        object_story_spec: dict[str, Any] = {
+            "page_id": page_id,
+            "link_data": {
+                "link": url,
+                "message": str(row["primary_text"]).strip(),
+                "name": str(row["headline"]).strip(),
+                "description": str(row["description"]).strip(),
+                "image_hash": image_hash,
+                "call_to_action": {"type": "LEARN_MORE", "value": {"link": url}},
+            },
+        }
+        if instagram_actor_id:
+            object_story_spec["instagram_actor_id"] = instagram_actor_id
+
+        creative_params: dict[str, Any] = {
+            "name": f"{nome_linha} Creative ({ad_name})",
+            "object_story_spec": json.dumps(object_story_spec, ensure_ascii=False),
+        }
+        if authorization_category:
+            creative_params["authorization_category"] = authorization_category
+
+        try:
+            if dry_run:
+                creative_id = "DRY_RUN_CREATIVE"
+                ad_id = "DRY_RUN_AD"
+            else:
+                creative = graph.post(f"{ad_account_id}/adcreatives", creative_params)
+                creative_id = creative["id"]
+                ad_params = {
+                    "name": ad_name,
+                    "adset_id": adset["id"],
+                    "creative": json.dumps({"creative_id": creative_id}),
+                    "status": "PAUSED",
+                }
+                ad = graph.post(f"{ad_account_id}/ads", ad_params)
+                ad_id = ad["id"]
+                time.sleep(0.35)
+        except GraphError as exc:
+            logger.error("Erro criando anúncio adicional em %s: %s", nome_linha, exc)
+            erros.append({"name": nome_linha, "error": str(exc), "raw": exc.error})
+            continue
+
+        criados.append({"name": nome_linha, "adset_id": adset["id"], "creative_id": creative_id, "ad_id": ad_id})
+        logger.info("Anúncio adicional criado em %s (adset %s) -> %s", nome_linha, adset["id"], ad_id)
+
+    return {"criados": criados, "ja_prontos": ja_prontos, "nao_encontrados": nao_encontrados, "erros": erros}
+
+
 @dataclass
 class SyncResult:
     adsets_criados: list[dict[str, Any]] = field(default_factory=list)

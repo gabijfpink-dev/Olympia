@@ -66,6 +66,13 @@ rodar duplicado) — reaproveita a coluna "name" de uma planilha, ou lista
 direto com --names:
     python -m meta_ads_ops.cli pause-by-name --campaign-id 120250289351650061 --excel-file C:/MetaAPI/LeandroGrass/leandro_grass_temas.xlsx --config config_1818.py --dry-run
     python -m meta_ads_ops.cli pause-by-name --campaign-id 120250289351650061 --excel-file C:/MetaAPI/LeandroGrass/leandro_grass_temas.xlsx --config config_1818.py
+
+Pra ADICIONAR (sem substituir) um anúncio novo em cada adset de uma
+campanha cujo nome bate com uma linha da planilha (ex.: mesmo criativo de
+reconhecimento rodando também dentro do adset por cidade já existente) —
+linha sem adset correspondente é só reportada, não trava nada:
+    python -m meta_ads_ops.cli add-ad-by-name --campaign-id 120250289351650061 --excel-file C:/MetaAPI/LeandroGrass/leandro_grass_temas.xlsx --images-folder C:/MetaAPI/LeandroGrass --page-id 153682945207770 --config config_1818.py --authorization-category POLITICAL --dry-run
+    python -m meta_ads_ops.cli add-ad-by-name --campaign-id 120250289351650061 --excel-file C:/MetaAPI/LeandroGrass/leandro_grass_temas.xlsx --images-folder C:/MetaAPI/LeandroGrass --page-id 153682945207770 --config config_1818.py --authorization-category POLITICAL
 """
 
 from __future__ import annotations
@@ -82,6 +89,7 @@ from .sync import (
     CampaignBootstrapper,
     CitySync,
     _buscar_cidade,
+    add_ads_to_adsets_by_name,
     create_campaign_with_lifetime_budget,
     duplicate_campaign,
     pause_adsets_by_name,
@@ -95,7 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "action", choices=[
             "sync", "activate", "update-creative", "campaign-update", "campaign-duplicate",
-            "campaign-create-like", "pause-by-name", "bootstrap", "geocheck", "instacheck",
+            "campaign-create-like", "pause-by-name", "add-ad-by-name", "bootstrap", "geocheck", "instacheck",
         ],
         help="sync: cria o que falta (pausado). activate: coloca no ar o que já existe. "
         "update-creative: recria o criativo (link/texto/imagem) de cidades já com anúncio, a "
@@ -106,6 +114,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "de outra como referência (use pra trocar orçamento diário->total sem o limite de cópia). "
         "pause-by-name: pausa adsets+anúncios de uma campanha cujo nome bate com uma lista "
         "(ex.: mesmos temas que migraram pra outra campanha). "
+        "add-ad-by-name: adiciona um anúncio NOVO (sem mexer no que já existe) em cada adset de "
+        "uma campanha cujo nome bate com a planilha (ex.: mesmo criativo rodando também por cidade). "
         "bootstrap: cria campanha+1º adset+criativo+anúncio do zero (conta sem campanha ainda). "
         "geocheck: testa se uns nomes existem na busca de geolocalização, sem criar nada. "
         "instacheck: lista os instagram_actor_id válidos pra usar num criativo.",
@@ -136,8 +146,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--authorization-category", default=None,
-        help="Só pro modo --adset-id: 'POLITICAL' pra campanha eleitoral (obrigatório se a campanha "
-        "tiver special_ad_categories de eleições/política, senão a Meta rejeita o criativo).",
+        help="Pro modo --adset-id ou pra 'add-ad-by-name': 'POLITICAL' pra campanha eleitoral "
+        "(obrigatório se a campanha tiver special_ad_categories de eleições/política, senão a "
+        "Meta rejeita o criativo).",
+    )
+    parser.add_argument(
+        "--ad-name", default="Reconhecimento",
+        help="Só pra 'add-ad-by-name': nome do anúncio novo adicionado em cada adset (padrão: "
+        "'Reconhecimento'). Rodar de novo com o mesmo nome não duplica — é idempotente por adset.",
     )
     parser.add_argument(
         "--like-campaign-id", default=None,
@@ -512,6 +528,67 @@ def _run_pause_by_name(args: argparse.Namespace, logger: logging.Logger) -> int:
     return 0
 
 
+def _run_add_ad_by_name(args: argparse.Namespace, logger: logging.Logger) -> int:
+    if not args.client and not args.campaign_id:
+        logger.error("--client ou --campaign-id é obrigatório pra 'add-ad-by-name'")
+        return 1
+    missing = [
+        n for n, v in [("--excel-file", args.excel_file), ("--images-folder", args.images_folder),
+                        ("--page-id", args.page_id)]
+        if not v
+    ]
+    if missing:
+        logger.error("Faltando %s (obrigatórios pra 'add-ad-by-name')", ", ".join(missing))
+        return 1
+
+    campaign_id = args.campaign_id
+    try:
+        if not campaign_id:
+            client = load_client(args.client)
+            campaign_id = client.campaign_id
+        secrets = load_secrets(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    try:
+        import pandas as pd
+        df = pd.read_excel(args.excel_file)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    logger.info(
+        "Campanha=%s %d linha(s) na planilha ad_name='%s' dry-run=%s",
+        campaign_id, len(df), args.ad_name, args.dry_run,
+    )
+
+    graph = GraphClient(secrets.access_token, secrets.api_version)
+
+    try:
+        result = add_ads_to_adsets_by_name(
+            graph, campaign_id, secrets.ad_account_id, args.page_id, df, args.images_folder,
+            ad_name=args.ad_name, instagram_actor_id=args.instagram_actor_id,
+            authorization_category=args.authorization_category, dry_run=args.dry_run,
+        )
+    except (ValueError, RateLimitError) as exc:
+        logger.error("Erro: %s", exc)
+        return 1
+
+    logger.info(
+        "Concluído. criados=%d já prontos=%d não encontrados=%d erros=%d",
+        len(result["criados"]), len(result["ja_prontos"]), len(result["nao_encontrados"]), len(result["erros"]),
+    )
+    output_json = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output_json)
+        logger.info("Resumo salvo em %s", args.output)
+    else:
+        print(output_json)
+    return 1 if result["erros"] else 0
+
+
 def _run_bootstrap(args: argparse.Namespace, logger: logging.Logger) -> int:
     if not args.bootstrap_config:
         logger.error("--bootstrap-config é obrigatório pra 'bootstrap'")
@@ -572,6 +649,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "pause-by-name":
         return _run_pause_by_name(args, logger)
+
+    if args.action == "add-ad-by-name":
+        return _run_add_ad_by_name(args, logger)
 
     if args.action == "geocheck":
         return _run_geocheck(args, logger)

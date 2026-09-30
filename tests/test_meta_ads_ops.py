@@ -10,7 +10,14 @@ import requests
 from meta_ads_ops.clients import BootstrapConfig, ClientConfig, load_secrets
 from meta_ads_ops.graph import GraphClient, GraphError
 from meta_ads_ops.normalize import normalizar
-from meta_ads_ops.sync import AdSetAdSync, CampaignBootstrapper, CitySync, _buscar_cidade, pause_adsets_by_name
+from meta_ads_ops.sync import (
+    AdSetAdSync,
+    CampaignBootstrapper,
+    CitySync,
+    _buscar_cidade,
+    add_ads_to_adsets_by_name,
+    pause_adsets_by_name,
+)
 
 
 class GraphClientRetryTests(unittest.TestCase):
@@ -372,6 +379,78 @@ class AdSetAdSyncTests(unittest.TestCase):
         )
         sync.sync()
         self.assertEqual(self.graph.posts, [])
+
+
+class AddAdByNameTests(unittest.TestCase):
+    """add_ads_to_adsets_by_name: adiciona anúncio NOVO (sem substituir) em
+    cada adset de uma campanha cujo nome bate com uma linha da planilha."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        self.images_folder = Path(self.tmpdir.name) / "images"
+        self.images_folder.mkdir()
+        (self.images_folder / "cidade-pronta.jpg").write_bytes(b"fake-image-bytes")
+
+        self.df = pd.DataFrame([
+            {
+                "name": "Cidade Pronta",  # bate com o adset padrão do FakeGraph
+                "url": "https://exemplo.com/novo",
+                "image": "cidade-pronta.jpg",
+                "primary_text": "Texto",
+                "headline": "Título",
+                "description": "Descrição",
+            },
+            {
+                "name": "Cidade Fantasma",  # não existe nenhum adset com esse nome
+                "url": "https://exemplo.com/novo",
+                "image": "cidade-pronta.jpg",
+                "primary_text": "Texto",
+                "headline": "Título",
+                "description": "Descrição",
+            },
+        ])
+
+    def test_creates_ad_in_matching_adset_without_touching_existing_ad(self):
+        graph = FakeGraph()
+        result = add_ads_to_adsets_by_name(
+            graph, "CAMPANHA_1", "act_1", "PAGE_1", self.df, str(self.images_folder),
+            ad_name="Reconhecimento", dry_run=False,
+        )
+
+        self.assertEqual(len(result["criados"]), 1)
+        self.assertEqual(result["criados"][0]["name"], "Cidade Pronta")
+        self.assertEqual(result["criados"][0]["adset_id"], "ADSET_EXISTENTE")
+        self.assertEqual(result["nao_encontrados"], ["Cidade Fantasma"])
+        self.assertEqual(result["erros"], [])
+
+        # o anúncio original (AD_1) continua lá, e o novo foi adicionado junto.
+        nomes_ads = {a["name"] for a in graph.ads}
+        self.assertIn("01", nomes_ads)
+        self.assertIn("Reconhecimento", nomes_ads)
+
+    def test_second_run_with_same_ad_name_is_idempotent(self):
+        graph = FakeGraph()
+        add_ads_to_adsets_by_name(
+            graph, "CAMPANHA_1", "act_1", "PAGE_1", self.df, str(self.images_folder),
+            ad_name="Reconhecimento", dry_run=False,
+        )
+        result2 = add_ads_to_adsets_by_name(
+            graph, "CAMPANHA_1", "act_1", "PAGE_1", self.df, str(self.images_folder),
+            ad_name="Reconhecimento", dry_run=False,
+        )
+
+        self.assertEqual(result2["criados"], [])
+        self.assertEqual(result2["ja_prontos"], ["Cidade Pronta"])
+
+    def test_dry_run_never_calls_post(self):
+        graph = FakeGraph()
+        add_ads_to_adsets_by_name(
+            graph, "CAMPANHA_1", "act_1", "PAGE_1", self.df, str(self.images_folder),
+            ad_name="Reconhecimento", dry_run=True,
+        )
+        self.assertEqual(graph.posts, [])
 
 
 class PauseByNameTests(unittest.TestCase):
