@@ -1,4 +1,8 @@
 .env
+# .env.<cliente> do social_scheduler (tokens reais); os .example são o molde
+.env.*
+!.env.example
+!.env.social.example
 __pycache__/
 *.pyc
 .venv/

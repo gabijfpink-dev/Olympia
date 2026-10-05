@@ -1,5 +1,9 @@
 # Automação Meta Ads
 
+> **Postagens orgânicas agendadas (Facebook, Instagram e LinkedIn):** veja
+> [`social_scheduler/README.md`](social_scheduler/README.md). Publica posts
+> a partir de uma planilha, nos horários definidos, sem anúncio.
+
 Duas ferramentas complementares para o Meta Ads (Facebook/Instagram):
 
 - **[`meta_ads_automation/`](meta_ads_automation)** — cria uma campanha do
