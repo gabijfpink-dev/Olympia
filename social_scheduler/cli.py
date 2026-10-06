@@ -50,9 +50,15 @@ def make_publisher(platform: str):
 
         return FacebookPublisher(settings.facebook_settings())
     if platform == "instagram":
-        from social_scheduler.meta import InstagramPublisher
+        from social_scheduler.meta import FacebookPublisher, InstagramPublisher
 
-        return InstagramPublisher(settings.instagram_settings())
+        image_host = None
+        try:
+            # Imagem local no Instagram é hospedada via Página (ver host_image).
+            image_host = FacebookPublisher(settings.facebook_settings()).host_image
+        except settings.MissingCredentialError:
+            pass
+        return InstagramPublisher(settings.instagram_settings(), image_host=image_host)
     if platform == "linkedin":
         from social_scheduler.linkedin import LinkedInPublisher
 
@@ -83,6 +89,39 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 1 if bad else 0
 
 
+def _print_sections(sections) -> None:
+    for title, items in sections:
+        if items:
+            print(f"\n{title}:")
+            for item in items:
+                print(f"  - {item}")
+
+
+def print_run_report(report) -> None:
+    _print_sections((
+        ("Publicados", report.published),
+        ("Sairiam agora (dry-run)", report.would_publish),
+        ("FALHARAM (tenta de novo na próxima rodada)", report.failed),
+        ("Desistiu após várias falhas (use 'reset' pra tentar de novo)", report.gave_up),
+        ("Atrasados demais, NÃO publicados (ajuste publish_at)", report.too_late),
+        ("Vencidos mas com erro na agenda (rode 'validate')", report.invalid),
+    ))
+    if not any(vars(report).values()):
+        print("Nada pra publicar agora.")
+
+
+def print_native_report(report) -> None:
+    _print_sections((
+        ("Agendados no Facebook (veja em Business Suite > Planejador)", report.scheduled),
+        ("Seriam agendados (dry-run)", report.would_schedule),
+        ("FALHARAM (rode de novo depois de corrigir; os já agendados não repetem)", report.failed),
+        ("Em cima da hora (< 15 min) — ficam pro 'run' publicar", report.too_soon),
+        ("Com erro na agenda (rode 'validate')", report.invalid),
+    ))
+    if not any(vars(report).values()):
+        print("Nenhum post do Facebook pendente pra agendar.")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from social_scheduler.runner import run
 
@@ -105,20 +144,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         logger.warning("%s", exc)
         return 0  # rodada anterior ainda trabalhando; não é erro
 
-    for title, items in (
-        ("Publicados", report.published),
-        ("Sairiam agora (dry-run)", report.would_publish),
-        ("FALHARAM (tenta de novo na próxima rodada)", report.failed),
-        ("Desistiu após várias falhas (use 'reset' pra tentar de novo)", report.gave_up),
-        ("Atrasados demais, NÃO publicados (ajuste publish_at)", report.too_late),
-        ("Vencidos mas com erro na agenda (rode 'validate')", report.invalid),
-    ):
-        if items:
-            print(f"\n{title}:")
-            for item in items:
-                print(f"  - {item}")
-    if not any(vars(report).values()):
-        print("Nada pra publicar agora.")
+    print_run_report(report)
     return 0 if report.ok else 1
 
 
@@ -136,19 +162,7 @@ def cmd_facebook_schedule(args: argparse.Namespace) -> int:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1
 
-    for title, items in (
-        ("Agendados no Facebook (veja em Business Suite > Planejador)", report.scheduled),
-        ("Seriam agendados (dry-run)", report.would_schedule),
-        ("FALHARAM (rode de novo depois de corrigir; os já agendados não repetem)", report.failed),
-        ("Em cima da hora (< 15 min) — ficam pro 'run' publicar", report.too_soon),
-        ("Com erro na agenda (rode 'validate')", report.invalid),
-    ):
-        if items:
-            print(f"\n{title}:")
-            for item in items:
-                print(f"  - {item}")
-    if not any(vars(report).values()):
-        print("Nenhum post do Facebook pendente pra agendar.")
+    print_native_report(report)
     others = sorted({p for post in posts for p in post.platforms} - {"facebook"})
     if others:
         print(
@@ -156,6 +170,12 @@ def cmd_facebook_schedule(args: argparse.Namespace) -> int:
             "com o 'run' rodando na hora (Agendador de Tarefas/servidor)."
         )
     return 0 if report.ok else 1
+
+
+def cmd_cloud_run(args: argparse.Namespace) -> int:
+    from social_scheduler.cloud import load_secrets_from_env, run_all
+
+    return run_all(args.content_dir, load_secrets_from_env(), make_publisher)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -279,6 +299,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="só mostra, não agenda")
     p.add_argument("--now", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_facebook_schedule)
+
+    p = sub.add_parser("cloud-run", help="(GitHub Actions) agenda/publica todos os clientes de uma pasta")
+    p.add_argument("--content-dir", required=True, help="pasta com uma subpasta por cliente")
+    p.set_defaults(func=cmd_cloud_run)
 
     with_schedule(sub.add_parser("status", help="situação de cada post")).set_defaults(func=cmd_status)
 

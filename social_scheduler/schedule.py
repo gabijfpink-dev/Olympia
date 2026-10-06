@@ -11,7 +11,8 @@ Cada linha é um post. Colunas:
     text          legenda/texto do post.
     text_facebook / text_instagram / text_linkedin
                   (opcionais) texto específico daquela rede, no lugar de "text".
-    images        URL(s) ou caminho(s) local(is) de imagem, separados por "|".
+    images        URL(s) ou nome(s) de arquivo de imagem, separados por "|"
+                  (arquivo local é relativo à pasta da agenda).
                   Mais de uma = carrossel (Instagram até 10).
     video         URL de vídeo (Reels no Instagram, vídeo na Página).
     link          link (Facebook: post com prévia; LinkedIn: artigo).
@@ -151,12 +152,6 @@ def _validate(post: Post) -> None:
                 errors.append("instagram: precisa de 'images' ou 'video'")
             if len(post.images) > INSTAGRAM_MAX_CAROUSEL:
                 errors.append(f"instagram: carrossel aceita no máximo {INSTAGRAM_MAX_CAROUSEL} imagens")
-            local = [img for img in post.images if not is_url(img)]
-            if local:
-                errors.append(
-                    "instagram: imagens precisam ser URLs públicas (a API do Instagram "
-                    f"baixa a imagem da URL; arquivo local não serve): {', '.join(local)}"
-                )
             if len(text) > INSTAGRAM_MAX_CAPTION:
                 errors.append(f"instagram: legenda passa de {INSTAGRAM_MAX_CAPTION} caracteres")
         elif platform == "facebook":

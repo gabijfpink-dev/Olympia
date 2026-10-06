@@ -16,7 +16,11 @@ Como funciona:
 > próprio Facebook, e eles saem mesmo com o computador desligado. **O Instagram e o
 > LinkedIn não têm agendamento pela API** (nenhuma ferramenta consegue isso; as
 > que "agendam" guardam o post num servidor e publicam na hora). Pra essas
-> duas redes, o `run` precisa estar rodando no horário de cada post (Passo 5).
+> duas redes, o `run` precisa estar rodando no horário de cada post.
+>
+> **Recomendado: [modo nuvem](#modo-nuvem--subir-o-mês-e-esquecer-github-actions).**
+> Você sobe a planilha e as imagens do mês uma vez, e o GitHub cuida do resto:
+> agenda o Facebook e publica Instagram/LinkedIn na hora, com o PC desligado.
 
 ---
 
@@ -109,7 +113,7 @@ Excel e salve como `.xlsx`, se preferir. Planilhas `.xlsx` ficam fora do git.
 | `platforms` | sim | `facebook, instagram, linkedin` (ou `fb, ig, li`) |
 | `text` | | legenda/texto |
 | `text_facebook`, `text_instagram`, `text_linkedin` | | texto diferente pra uma rede específica |
-| `images` | IG: sim (ou vídeo) | URL(s) separadas por `\|`. Mais de uma = carrossel |
+| `images` | IG: sim (ou vídeo) | nome do arquivo na pasta da planilha (ex.: `post01.jpg`) ou URL. Várias separadas por `\|` = carrossel |
 | `video` | | URL do vídeo (Reels no Instagram, vídeo na Página) |
 | `link` | | Facebook: post com prévia do link · LinkedIn: artigo |
 | `link_title` | | título do artigo no LinkedIn |
@@ -118,10 +122,11 @@ Excel e salve como `.xlsx`, se preferir. Planilhas `.xlsx` ficam fora do git.
 
 Regras de cada rede (o `validate` confere tudo isso):
 
-- **Instagram**: precisa de imagem ou vídeo. **A imagem tem que estar numa URL
-  pública** em JPEG, porque o Instagram baixa o arquivo da URL. Link de
-  compartilhamento do Google Drive/Dropbox não serve; use o site do cliente,
-  um bucket S3/Cloudinary etc. Carrossel tem no máximo 10 itens e a legenda até 2.200 caracteres.
+- **Instagram**: precisa de imagem ou vídeo. A imagem pode ser um arquivo da
+  pasta (JPG ou PNG). O código hospeda a imagem como foto oculta da Página do
+  Facebook, então `META_PAGE_ID` e `META_PAGE_ACCESS_TOKEN` precisam estar no
+  `.env`. Vídeo (Reels) precisa ser URL pública. Carrossel tem no máximo 10
+  itens e a legenda até 2.200 caracteres.
 - **Facebook**: aceita texto puro, link, imagem (URL ou arquivo local) e vídeo (URL).
 - **LinkedIn**: aceita texto, imagem (URL ou arquivo local, até 20) **ou**
   link, mas não os dois juntos. Vídeo ainda não é suportado. Texto até 3.000
@@ -210,6 +215,84 @@ python -m social_scheduler facebook-schedule --schedule C:\MetaAPI\Posts\agenda.
 
 Um servidor sempre ligado (VPS de baixo custo) evita o problema do computador desligado.
 
+## Modo nuvem — subir o mês e esquecer (GitHub Actions)
+
+O workflow [`.github/workflows/social-scheduler.yml`](../.github/workflows/social-scheduler.yml)
+roda a cada 10 minutos nos servidores do GitHub, de graça porque este
+repositório é público. Em cada rodada, pra cada cliente, ele:
+
+1. agenda no próprio Facebook os posts futuros (saem no minuto exato);
+2. publica no Instagram e no LinkedIn o que já venceu (pode atrasar alguns
+   minutos, porque o GitHub às vezes demora pra disparar);
+3. salva o `estado.json`, pra nunca postar duas vezes.
+
+**As planilhas e imagens NÃO vão neste repositório**, porque ele é público e
+qualquer um veria os posts antes de saírem. Elas ficam num repositório privado só de conteúdo.
+
+### Configuração (uma vez)
+
+1. **Crie o repositório de conteúdo privado.** No GitHub: **New repository** →
+   nome `olympia-conteudo` → marque **Private** → Create.
+2. **Crie um token para o robô ler e gravar nele.** GitHub → sua foto →
+   **Settings → Developer settings → Personal access tokens → Fine-grained
+   tokens → Generate new token**:
+   - Expiration: até 1 ano (anote a data pra renovar)
+   - Repository access: **Only select repositories** → `olympia-conteudo`
+   - Permissions → Repository permissions → **Contents: Read and write**
+   - Generate e copie o token.
+3. **No repositório Olympia → Settings → Secrets and variables → Actions:**
+   - aba **Variables** → New variable: `SOCIAL_CONTENT_REPO` = `gabijfpink-dev/olympia-conteudo`
+   - aba **Secrets** → New secret: `SOCIAL_CONTENT_TOKEN` = o token do passo 2
+   - aba **Secrets** → um secret por cliente, `SOCIAL_ENV_<CLIENTE>`, com o
+     **conteúdo inteiro do `.env` daquele cliente** (copie e cole o arquivo todo).
+     O nome é o da pasta do cliente em maiúsculas, com `-` virando `_`:
+     pasta `leandro-grass` → secret `SOCIAL_ENV_LEANDRO_GRASS`.
+4. **O workflow precisa estar na branch principal** do Olympia, porque o GitHub só
+   roda agendamentos de lá. Faça o merge desta branch.
+5. **Teste:** aba **Actions** → "Postagens agendadas" → **Run workflow**. O
+   log mostra, por cliente, o que foi agendado, publicado ou deu erro.
+
+### Todo mês
+
+No `olympia-conteudo`, uma pasta por cliente:
+
+```
+olympia-conteudo/
+  bebetto/
+    agenda.xlsx        ← a planilha do mês (colunas do Passo 3)
+    post01.jpg         ← imagens citadas na coluna "images"
+    post02.png
+    ...
+    estado.json        ← criado pelo robô; não mexa
+  leandro-grass/
+    agenda.xlsx
+    ...
+```
+
+Pra subir: entre no repositório pelo navegador → pasta do cliente → **Add
+file → Upload files** → arraste a planilha e todas as imagens → **Commit
+changes**. Pronto: na próxima rodada (até 10 min) os posts do Facebook já
+aparecem no Planejador do Business Suite, e Instagram/LinkedIn saem no horário.
+
+- Pra corrigir um post que ainda não saiu, suba a planilha de novo (mesmo nome).
+  Atenção: post do Facebook já agendado não muda com isso. Edite no Planejador.
+- Pode deixar as linhas dos meses anteriores na planilha ou apagar. O que já
+  saiu está no `estado.json` e não repete.
+- Pra cancelar tudo de um cliente, apague a pasta dele (os posts do Facebook já
+  agendados precisam ser excluídos no Planejador).
+
+### Avisos
+
+- **Se algo falhar, o GitHub manda e-mail** pra você (execução marcada como
+  falha). Os detalhes ficam na aba Actions.
+- **Token do LinkedIn vence em 60 dias.** Rode `linkedin-auth` no seu PC e
+  atualize o secret `SOCIAL_ENV_<CLIENTE>` com o `.env` novo.
+- O token do passo 2 também vence (na data que você escolheu). Gere outro e
+  atualize `SOCIAL_CONTENT_TOKEN`.
+- Em repositório público, o GitHub **desliga agendamentos após 60 dias sem
+  nenhum commit no Olympia**. Ele avisa por e-mail antes; é só clicar pra
+  reativar (ou fazer qualquer commit).
+
 ## Dia a dia
 
 - **Adicionar posts:** é só incluir linhas novas na planilha. Na próxima rodada elas já entram.
@@ -231,7 +314,8 @@ Um servidor sempre ligado (VPS de baixo custo) evita o problema do computador de
 | mensagem | o que fazer |
 |---|---|
 | `Variáveis ausentes no .env: ...` | preencha a variável no `.env.cliente` (Passos 1 e 2) |
-| `instagram: imagens precisam ser URLs públicas` | hospede a imagem num endereço público (veja o Passo 3) |
+| `imagem local no Instagram precisa de META_PAGE_ID...` | preencha a Página do Facebook no `.env`: ela é usada pra hospedar a imagem |
+| `Sem credenciais: crie o secret SOCIAL_ENV_...` | modo nuvem: falta o secret daquele cliente (veja "Configuração", passo 3) |
 | `Instagram recusou a mídia (ERROR)` | imagem não é JPEG, proporção fora do aceito (entre 4:5 e 1.91:1) ou vídeo fora do padrão de Reels |
 | `(#200) ... permission` / `(#10)` | falta permissão no token do Meta (Passo 1.4); gere de novo |
 | `HTTP 401 ... linkedin-auth` | token do LinkedIn venceu: rode `linkedin-auth` |

@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from typing import Callable
 
 from meta_ads_ops.graph import GraphClient, GraphError
 from social_scheduler.schedule import Post, is_url
@@ -34,6 +35,17 @@ class FacebookPublisher:
         if is_url(image):
             return self.client.post(path, {**data, "url": image})
         return self.client.post_file(path, "source", image, data)
+
+    def host_image(self, image_path: str) -> str:
+        """Sobe uma imagem local como foto oculta da Página e devolve a URL
+        pública dela (CDN do Facebook). O Instagram só aceita imagem por URL;
+        assim a pasta local funciona igual às campanhas, e PNG vira JPEG."""
+        photo = self.client.post_file(f"{self.page_id}/photos", "source", image_path, {"published": "false"})
+        info = self.client.get(photo["id"], {"fields": "images"})
+        sizes = info.get("images") or []
+        if not sizes:
+            raise GraphError({"message": f"Facebook não devolveu a URL da imagem {image_path}"})
+        return max(sizes, key=lambda i: i.get("width", 0) * i.get("height", 0))["source"]
 
     def publish(self, post: Post, scheduled_for: datetime | None = None) -> str:
         """Publica já ou, com scheduled_for, deixa agendado no próprio Facebook
@@ -73,11 +85,27 @@ class FacebookPublisher:
 class InstagramPublisher:
     platform = "instagram"
 
-    def __init__(self, settings: InstagramSettings, client: GraphClient | None = None):
+    def __init__(
+        self,
+        settings: InstagramSettings,
+        client: GraphClient | None = None,
+        image_host: Callable[[str], str] | None = None,
+    ):
         self.ig_user_id = settings.ig_user_id
         self.client = client or GraphClient(
             settings.access_token, settings.api_version, host=settings.host
         )
+        self.image_host = image_host
+
+    def _image_url(self, image: str) -> str:
+        if is_url(image):
+            return image
+        if self.image_host is None:
+            raise GraphError(
+                {"message": "imagem local no Instagram precisa de META_PAGE_ID e META_PAGE_ACCESS_TOKEN "
+                            "no .env (a imagem é hospedada pela Página do Facebook)"}
+            )
+        return self.image_host(image)
 
     def _wait_ready(self, container_id: str) -> None:
         deadline = time.monotonic() + CONTAINER_POLL_TIMEOUT
@@ -110,13 +138,14 @@ class InstagramPublisher:
                 {"media_type": "REELS", "video_url": post.video, "caption": caption, "share_to_feed": "true"}
             )
         elif len(post.images) == 1:
-            data = {"image_url": post.images[0], "caption": caption}
+            data = {"image_url": self._image_url(post.images[0]), "caption": caption}
             if post.alt_text:
                 data["alt_text"] = post.alt_text
             container = self._create(data)
         else:
             children = [
-                self._create({"image_url": image, "is_carousel_item": "true"}) for image in post.images
+                self._create({"image_url": self._image_url(image), "is_carousel_item": "true"})
+                for image in post.images
             ]
             container = self._create(
                 {"media_type": "CAROUSEL", "children": ",".join(children), "caption": caption}

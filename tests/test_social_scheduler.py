@@ -55,12 +55,12 @@ class ScheduleTests(unittest.TestCase):
         post = make_post(platforms="instagram", images="")
         self.assertIn("instagram: precisa de 'images' ou 'video'", post.errors)
 
-    def test_instagram_rejects_local_image(self):
+    def test_instagram_accepts_local_image(self):
         with TemporaryDirectory() as tmp:
             img = os.path.join(tmp, "a.jpg")
             open(img, "wb").close()
             post = make_post(platforms="instagram", images=img)
-        self.assertTrue(any("URLs públicas" in e for e in post.errors))
+        self.assertTrue(post.valid, post.errors)
 
     def test_linkedin_rejects_image_plus_link(self):
         post = make_post(platforms="linkedin", link="https://site")
@@ -240,6 +240,63 @@ class ScheduleNativeTests(unittest.TestCase):
         self.assertEqual(report.scheduled, ["b [facebook]"])
 
 
+class CloudTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = self.tmp.name
+        for client, platforms in (("cliente-a", "facebook, linkedin"), ("cliente-b", "linkedin")):
+            os.makedirs(os.path.join(self.dir, client))
+            with open(os.path.join(self.dir, client, "agenda.csv"), "w", encoding="utf-8") as fh:
+                fh.write("id;publish_at;platforms;text\n")
+                fh.write(f"p1;2026-10-10 09:00;{platforms};oi\n")
+        os.makedirs(os.path.join(self.dir, "sem-agenda"))
+        self.now = parse_datetime("2026-10-10 09:02", TZ)
+        self.env_backup = dict(os.environ)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.env_backup)
+        self.tmp.cleanup()
+
+    def test_secret_name(self):
+        from social_scheduler.cloud import secret_name
+        self.assertEqual(secret_name("leandro-grass"), "SOCIAL_ENV_LEANDRO_GRASS")
+
+    def test_each_client_uses_only_its_own_credentials(self):
+        from social_scheduler.cloud import run_all
+
+        seen = []
+
+        def factory(platform):
+            seen.append((platform, os.getenv("LINKEDIN_ACCESS_TOKEN")))
+            return FakePublisher(platform)
+
+        secrets = {
+            "SOCIAL_ENV_CLIENTE_A": "LINKEDIN_ACCESS_TOKEN=token-a\nMETA_PAGE_ID=1",
+            # cliente B sem LinkedIn configurado: NÃO pode herdar o token do A
+            "SOCIAL_ENV_CLIENTE_B": "META_PAGE_ID=2",
+        }
+        run_all(self.dir, secrets, factory, now=self.now)
+        self.assertIn(("linkedin", "token-a"), seen)
+        self.assertIn(("linkedin", None), seen)
+        state = json.load(open(os.path.join(self.dir, "cliente-a", "estado.json")))
+        self.assertEqual(state["p1"]["linkedin"]["status"], "published")
+
+    def test_missing_secret_fails_but_other_clients_run(self):
+        from social_scheduler.cloud import run_all
+
+        code = run_all(self.dir, {"SOCIAL_ENV_CLIENTE_B": "X=1"}, lambda p: FakePublisher(p), now=self.now)
+        self.assertEqual(code, 1)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "cliente-b", "estado.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cliente-a", "estado.json")))
+
+    def test_load_secrets_filters(self):
+        from social_scheduler.cloud import load_secrets_from_env
+
+        os.environ["SOCIAL_SECRETS_JSON"] = json.dumps({"SOCIAL_ENV_X": "a", "GITHUB_TOKEN": "nope"})
+        self.assertEqual(load_secrets_from_env(), {"SOCIAL_ENV_X": "a"})
+
+
 class LockTests(unittest.TestCase):
     def test_second_lock_fails(self):
         with TemporaryDirectory() as tmp:
@@ -296,6 +353,15 @@ class FacebookPublisherTests(unittest.TestCase):
         self.assertEqual(feed["published"], "false")
         self.assertIn("scheduled_publish_time", feed)
 
+    def test_host_image_returns_largest_cdn_url(self):
+        self.client.post_file.return_value = {"id": "ph"}
+        self.client.get.return_value = {"images": [
+            {"width": 320, "height": 320, "source": "https://cdn/small.jpg"},
+            {"width": 1080, "height": 1080, "source": "https://cdn/big.jpg"},
+        ]}
+        self.assertEqual(self.pub.host_image(__file__), "https://cdn/big.jpg")
+        self.assertEqual(self.client.post_file.call_args.args[3], {"published": "false"})
+
     def test_link_post(self):
         self.client.post.return_value = {"id": "PAGE_3"}
         self.pub.publish(make_post(images="", link="https://site"))
@@ -328,6 +394,20 @@ class InstagramPublisherTests(unittest.TestCase):
         self.pub.publish(make_post(images="", video="https://x/v.mp4"))
         self.assertEqual(self.client.post.call_args_list[0].args[1]["media_type"], "REELS")
         mock_sleep.assert_called_once()
+
+    def test_local_image_is_hosted_via_page(self):
+        host = MagicMock(return_value="https://scontent.fbcdn/x.jpg")
+        pub = InstagramPublisher(InstagramSettings("IG", "tok", "v23.0", "graph.facebook.com"),
+                                 client=self.client, image_host=host)
+        self.client.post.side_effect = [{"id": "C1"}, {"id": "MEDIA"}]
+        self.client.get.return_value = {"status_code": "FINISHED"}
+        pub.publish(make_post(images=__file__))
+        host.assert_called_once_with(__file__)
+        self.assertEqual(self.client.post.call_args_list[0].args[1]["image_url"], "https://scontent.fbcdn/x.jpg")
+
+    def test_local_image_without_page_credentials_fails_clearly(self):
+        with self.assertRaisesRegex(GraphError, "META_PAGE_ID"):
+            self.pub.publish(make_post(images=__file__))
 
     def test_processing_error_raises(self):
         self.client.post.return_value = {"id": "C"}
