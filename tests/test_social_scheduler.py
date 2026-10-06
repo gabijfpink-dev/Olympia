@@ -10,7 +10,7 @@ import requests
 from meta_ads_ops.graph import GraphError, RateLimitError
 from social_scheduler.linkedin import LinkedInClient, LinkedInPublisher, escape_commentary, extract_code
 from social_scheduler.meta import FacebookPublisher, InstagramPublisher
-from social_scheduler.runner import run
+from social_scheduler.runner import run, schedule_native
 from social_scheduler.schedule import build_post, load_schedule, parse_datetime
 from social_scheduler.settings import (
     FacebookSettings,
@@ -193,6 +193,53 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(pub.calls, ["p1", "p1"])
 
 
+class ScheduleNativeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.state = StateStore(os.path.join(self.tmp.name, "state.json"))
+        self.now = parse_datetime("2026-10-01 08:00", TZ)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _pub(self):
+        pub = MagicMock()
+        pub.publish.side_effect = lambda post, scheduled_for: f"fb-{post.id}"
+        return pub
+
+    def test_schedules_future_facebook_posts_once_and_run_skips_them(self):
+        posts = [make_post(id="a", publish_at="2026-10-10 09:00"),
+                 make_post(id="b", publish_at="2026-10-20 09:00", platforms="instagram")]
+        pub = self._pub()
+        report = schedule_native(posts, self.state, self.now, lambda p: pub)
+        self.assertEqual(report.scheduled, ["a [facebook]"])
+        self.assertEqual(pub.publish.call_args.kwargs["scheduled_for"], posts[0].publish_at)
+
+        # Rodar de novo não duplica.
+        schedule_native(posts, self.state, self.now, lambda p: pub)
+        self.assertEqual(pub.publish.call_count, 1)
+
+        # Na hora do post, o run publica só instagram/linkedin, não o facebook.
+        fakes = {p: FakePublisher(p) for p in ("facebook", "instagram", "linkedin")}
+        run(posts, self.state, parse_datetime("2026-10-10 09:01", TZ), fakes.__getitem__)
+        self.assertEqual(fakes["facebook"].calls, [])
+        self.assertEqual(fakes["instagram"].calls, ["a"])
+
+    def test_too_soon_left_for_runner(self):
+        post = make_post(publish_at="2026-10-01 08:10")
+        report = schedule_native([post], self.state, self.now, lambda p: self._pub())
+        self.assertEqual(report.too_soon, ["p1 [facebook]"])
+        self.assertFalse(self.state.is_done("p1", "facebook"))
+
+    def test_failure_continues_with_next(self):
+        pub = MagicMock()
+        pub.publish.side_effect = [GraphError({"message": "data longe demais"}), "fb-2"]
+        posts = [make_post(id="a", publish_at="2026-10-10 09:00"), make_post(id="b", publish_at="2026-10-11 09:00")]
+        report = schedule_native(posts, self.state, self.now, lambda p: pub)
+        self.assertEqual(len(report.failed), 1)
+        self.assertEqual(report.scheduled, ["b [facebook]"])
+
+
 class LockTests(unittest.TestCase):
     def test_second_lock_fails(self):
         with TemporaryDirectory() as tmp:
@@ -230,6 +277,24 @@ class FacebookPublisherTests(unittest.TestCase):
         self.pub.publish(make_post(images=__file__))
         self.client.post_file.assert_called_once()
         self.assertEqual(self.client.post_file.call_args.args[1], "source")
+
+    def test_scheduled_single_photo(self):
+        self.client.post.return_value = {"id": "photo", "post_id": "PAGE_5"}
+        when = parse_datetime("2026-10-10 09:00", TZ)
+        self.pub.publish(make_post(), scheduled_for=when)
+        data = self.client.post.call_args.args[1]
+        self.assertEqual(data["published"], "false")
+        self.assertEqual(data["scheduled_publish_time"], str(int(when.timestamp())))
+
+    def test_scheduled_carousel_uses_temporary_photos(self):
+        self.client.post.side_effect = [{"id": "f1"}, {"id": "f2"}, {"id": "PAGE_9"}]
+        when = parse_datetime("2026-10-10 09:00", TZ)
+        self.pub.publish(make_post(images="https://x/1.jpg|https://x/2.jpg"), scheduled_for=when)
+        first = self.client.post.call_args_list[0].args[1]
+        self.assertEqual(first["temporary"], "true")
+        feed = self.client.post.call_args_list[2].args[1]
+        self.assertEqual(feed["published"], "false")
+        self.assertIn("scheduled_publish_time", feed)
 
     def test_link_post(self):
         self.client.post.return_value = {"id": "PAGE_3"}

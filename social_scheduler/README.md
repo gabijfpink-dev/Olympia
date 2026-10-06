@@ -11,9 +11,12 @@ Como funciona:
 3. Em cada rodada ele publica o que já passou do horário e ainda não saiu, e
    anota o resultado em `.state/social_<agenda>.json`. **Nenhum post sai duas vezes.**
 
-> Por que não usar o agendamento nativo de cada rede? O Instagram e o LinkedIn
-> não têm agendamento pela API, só o Facebook. Com o agendador próprio, as três
-> redes funcionam do mesmo jeito.
+> **Subir o mês inteiro de uma vez:** só o **Facebook** permite isso pela API.
+> O comando `facebook-schedule` (Passo 4b) deixa todos os posts agendados no
+> próprio Facebook, e eles saem mesmo com o computador desligado. **O Instagram e o
+> LinkedIn não têm agendamento pela API** (nenhuma ferramenta consegue isso; as
+> que "agendam" guardam o post num servidor e publicam na hora). Pra essas
+> duas redes, o `run` precisa estar rodando no horário de cada post (Passo 5).
 
 ---
 
@@ -147,7 +150,30 @@ python -m social_scheduler run --schedule C:\MetaAPI\Posts\agenda.xlsx --env-fil
 python -m social_scheduler status --schedule C:\MetaAPI\Posts\agenda.xlsx
 ```
 
-## Passo 5 — Deixar rodando sozinho
+## Passo 4b — Facebook: agendar o mês inteiro de uma vez
+
+```bash
+# confere o que seria agendado
+python -m social_scheduler facebook-schedule --schedule C:\MetaAPI\Posts\agenda.xlsx --env-file .env.cliente --dry-run
+
+# agenda de verdade
+python -m social_scheduler facebook-schedule --schedule C:\MetaAPI\Posts\agenda.xlsx --env-file .env.cliente
+```
+
+- Os posts aparecem em **Meta Business Suite → Planejador**, já com data e hora.
+  Dá pra conferir, editar ou excluir por lá.
+- O horário precisa estar pelo menos 15 min no futuro. Posts mais em cima da
+  hora ficam para o `run` publicar normalmente.
+- Pode rodar de novo à vontade (ex.: depois de incluir posts novos na
+  planilha): o que já foi agendado não é agendado de novo.
+- O Facebook aceita agendar até alguns meses à frente. Se recusar uma data
+  muito distante, o erro aparece no relatório e os outros posts seguem.
+- **Mudou a data ou o texto depois de agendar?** Edite direto no Planejador. Ou
+  exclua o post lá, rode `reset --id ... --platform facebook` e agende de novo.
+- O `run` ignora os posts já agendados no Facebook. Se o mesmo post também vai
+  pro Instagram/LinkedIn, o `run` publica só nessas redes.
+
+## Passo 5 — Deixar rodando sozinho (Instagram e LinkedIn)
 
 ### Windows (Agendador de Tarefas)
 

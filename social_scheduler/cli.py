@@ -10,6 +10,10 @@ Uso:
     # Publica o que já venceu (é ESTE comando que o Agendador de Tarefas/cron roda a cada 10 min)
     python -m social_scheduler run --schedule posts/agenda.xlsx --env-file .env.cliente
 
+    # Facebook: sobe o mês inteiro de uma vez, agendado no próprio Facebook
+    # (sai mesmo com o PC desligado; aparece no Planejador do Business Suite)
+    python -m social_scheduler facebook-schedule --schedule posts/agenda.xlsx --env-file .env.cliente
+
     # Situação de cada post (pendente / publicado / falhou)
     python -m social_scheduler status --schedule posts/agenda.xlsx
 
@@ -118,6 +122,42 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_facebook_schedule(args: argparse.Namespace) -> int:
+    from social_scheduler.runner import schedule_native
+
+    posts, state_path, tz = _load(args)
+    now = parse_datetime(args.now, tz) if args.now else datetime.now(timezone.utc)
+    try:
+        with RunLock(state_path):
+            report = schedule_native(
+                posts, StateStore(state_path), now, make_publisher, dry_run=args.dry_run
+            )
+    except LockedError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 1
+
+    for title, items in (
+        ("Agendados no Facebook (veja em Business Suite > Planejador)", report.scheduled),
+        ("Seriam agendados (dry-run)", report.would_schedule),
+        ("FALHARAM (rode de novo depois de corrigir; os já agendados não repetem)", report.failed),
+        ("Em cima da hora (< 15 min) — ficam pro 'run' publicar", report.too_soon),
+        ("Com erro na agenda (rode 'validate')", report.invalid),
+    ):
+        if items:
+            print(f"\n{title}:")
+            for item in items:
+                print(f"  - {item}")
+    if not any(vars(report).values()):
+        print("Nenhum post do Facebook pendente pra agendar.")
+    others = sorted({p for post in posts for p in post.platforms} - {"facebook"})
+    if others:
+        print(
+            f"\nAtenção: {', '.join(others)} não têm agendamento pela API — esses posts só saem "
+            "com o 'run' rodando na hora (Agendador de Tarefas/servidor)."
+        )
+    return 0 if report.ok else 1
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     posts, state_path, tz = _load(args)
     state = StateStore(state_path)
@@ -128,7 +168,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         for platform in post.platforms:
             info = state.get(post.id, platform)
             status = info.get("status") or ("desativado" if not post.enabled else "pendente")
-            if status == "failed":
+            if status == "scheduled":
+                status = "agendado no Facebook"
+            elif status == "failed":
                 status = f"falhou x{info.get('attempts')}: {info.get('error', '')[:60]}"
             cols.append(f"{platform}={status}")
         print(f"{when}  {post.id:<30} {'  '.join(cols)}")
@@ -230,6 +272,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-late-hours", type=float, default=6, help="não publica post vencido há mais que isso (padrão 6h)")
     p.add_argument("--max-attempts", type=int, default=3, help="tentativas por post/rede antes de desistir")
     p.set_defaults(func=cmd_run)
+
+    p = with_schedule(sub.add_parser(
+        "facebook-schedule", help="deixa TODOS os posts futuros do Facebook agendados no próprio Facebook"
+    ))
+    p.add_argument("--dry-run", action="store_true", help="só mostra, não agenda")
+    p.add_argument("--now", help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_facebook_schedule)
 
     with_schedule(sub.add_parser("status", help="situação de cada post")).set_defaults(func=cmd_status)
 

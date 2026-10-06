@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
 
 from meta_ads_ops.graph import GraphClient, GraphError
 from social_scheduler.schedule import Post, is_url
@@ -25,8 +26,8 @@ class FacebookPublisher:
         self.page_id = settings.page_id
         self.client = client or GraphClient(settings.page_access_token, settings.api_version)
 
-    def _upload_photo(self, image: str, published: bool, caption: str = "") -> dict:
-        data = {"published": "true" if published else "false"}
+    def _upload_photo(self, image: str, extra: dict[str, str], caption: str = "") -> dict:
+        data = dict(extra)
         if caption:
             data["caption"] = caption
         path = f"{self.page_id}/photos"
@@ -34,26 +35,35 @@ class FacebookPublisher:
             return self.client.post(path, {**data, "url": image})
         return self.client.post_file(path, "source", image, data)
 
-    def publish(self, post: Post) -> str:
+    def publish(self, post: Post, scheduled_for: datetime | None = None) -> str:
+        """Publica já ou, com scheduled_for, deixa agendado no próprio Facebook
+        (aparece em Meta Business Suite > Planejador e sai mesmo com o PC desligado)."""
         text = post.text_for(self.platform)
+        when: dict[str, str] = {}
+        if scheduled_for is not None:
+            when = {"published": "false", "scheduled_publish_time": str(int(scheduled_for.timestamp()))}
 
         if post.video:
             result = self.client.post(
-                f"{self.page_id}/videos", {"file_url": post.video, "description": text}
+                f"{self.page_id}/videos", {"file_url": post.video, "description": text, **when}
             )
             return result["id"]
 
         if len(post.images) == 1:
-            result = self._upload_photo(post.images[0], published=True, caption=text)
+            result = self._upload_photo(post.images[0], when or {"published": "true"}, caption=text)
             return result.get("post_id") or result["id"]
 
-        data: dict[str, str] = {}
+        data: dict[str, str] = dict(when)
         if text:
             data["message"] = text
         if post.images:
             # Várias fotos num post só: sobe cada uma sem publicar e anexa no feed.
+            # Pra post agendado, a Meta exige as fotos como "temporary".
+            hidden = {"published": "false"}
+            if when:
+                hidden["temporary"] = "true"
             for i, image in enumerate(post.images):
-                photo = self._upload_photo(image, published=False)
+                photo = self._upload_photo(image, hidden)
                 data[f"attached_media[{i}]"] = json.dumps({"media_fbid": photo["id"]})
         elif post.link:
             data["link"] = post.link

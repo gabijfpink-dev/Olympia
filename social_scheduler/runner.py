@@ -52,7 +52,7 @@ def due_jobs(
             continue
         for platform in post.platforms:
             key = f"{post.id} [{platform}]"
-            if state.is_published(post.id, platform):
+            if state.is_done(post.id, platform):
                 continue
             if now - post.publish_at > max_late:
                 # Post antigo que nunca saiu (máquina desligada, token vencido...):
@@ -112,4 +112,75 @@ def run(
         logger.info("Publicado %s -> %s", key, remote_id)
         report.published.append(key)
 
+    return report
+
+
+# O Facebook só aceita agendar com pelo menos 10 min de antecedência; a folga
+# cobre o tempo de subir as fotos antes da chamada final.
+NATIVE_MIN_LEAD = timedelta(minutes=15)
+
+
+@dataclass
+class NativeReport:
+    scheduled: list[str] = field(default_factory=list)
+    would_schedule: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    too_soon: list[str] = field(default_factory=list)
+    invalid: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (self.failed or self.invalid)
+
+
+def schedule_native(
+    posts: list[Post],
+    state: StateStore,
+    now: datetime,
+    make_publisher: Callable[[str], Publisher],
+    platform: str = "facebook",
+    dry_run: bool = False,
+) -> NativeReport:
+    """Entrega de uma vez à rede todos os posts futuros, com data marcada.
+
+    Só o Facebook tem isso na API. Depois de agendado, o post fica no
+    Facebook (Business Suite > Planejador) e o 'run' não mexe mais nele.
+    """
+    report = NativeReport()
+    publisher: Publisher | None = None
+    for post in sorted(posts, key=lambda p: p.publish_at):
+        if platform not in post.platforms or not post.enabled or state.is_done(post.id, platform):
+            continue
+        key = f"{post.id} [{platform}]"
+        if not post.valid:
+            report.invalid.append(f"{post.id}: {'; '.join(post.errors)}")
+            continue
+        if post.publish_at - now < NATIVE_MIN_LEAD:
+            # Muito em cima da hora pro Facebook aceitar; o 'run' publica na hora.
+            report.too_soon.append(key)
+            continue
+        if dry_run:
+            logger.info("[dry-run] agendaria %s para %s", key, post.publish_at.isoformat())
+            report.would_schedule.append(key)
+            continue
+
+        try:
+            if publisher is None:
+                publisher = make_publisher(platform)
+            remote_id = publisher.publish(post, scheduled_for=post.publish_at)
+        except MissingCredentialError as exc:
+            report.failed.append(f"{key}: {exc}")
+            break
+        except RateLimitError as exc:
+            logger.error("Rate limit em %s: %s — rode de novo mais tarde (o que já foi fica).", key, exc)
+            report.failed.append(f"{key}: rate limit")
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Falhou ao agendar %s: %s", key, exc)
+            report.failed.append(f"{key}: {exc}")
+            continue
+
+        state.mark_scheduled(post.id, platform, remote_id, post.publish_at.isoformat())
+        logger.info("Agendado %s para %s -> %s", key, post.publish_at.isoformat(), remote_id)
+        report.scheduled.append(key)
     return report

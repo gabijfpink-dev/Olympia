@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 PUBLISHED = "published"
+SCHEDULED = "scheduled"  # já entregue à rede com data marcada (agendamento nativo do Facebook)
 FAILED = "failed"
 
 LOCK_STALE_SECONDS = 2 * 60 * 60
@@ -42,6 +43,10 @@ class StateStore:
     def is_published(self, post_id: str, platform: str) -> bool:
         return self.get(post_id, platform).get("status") == PUBLISHED
 
+    def is_done(self, post_id: str, platform: str) -> bool:
+        """Publicado ou já agendado na própria rede: o runner não deve mexer."""
+        return self.get(post_id, platform).get("status") in (PUBLISHED, SCHEDULED)
+
     def attempts(self, post_id: str, platform: str) -> int:
         return int(self.get(post_id, platform).get("attempts", 0))
 
@@ -53,6 +58,16 @@ class StateStore:
             "status": PUBLISHED,
             "remote_id": remote_id,
             "published_at": self._now(),
+            "attempts": self.attempts(post_id, platform) + 1,
+        }
+        self.save()
+
+    def mark_scheduled(self, post_id: str, platform: str, remote_id: str, scheduled_for: str) -> None:
+        self.data.setdefault(post_id, {})[platform] = {
+            "status": SCHEDULED,
+            "remote_id": remote_id,
+            "scheduled_for": scheduled_for,
+            "scheduled_at": self._now(),
             "attempts": self.attempts(post_id, platform) + 1,
         }
         self.save()
