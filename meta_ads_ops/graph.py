@@ -53,9 +53,15 @@ class RateLimitError(RuntimeError):
 
 
 class GraphClient:
-    def __init__(self, access_token: str, api_version: str, timeout: int = 120):
+    def __init__(
+        self,
+        access_token: str,
+        api_version: str,
+        timeout: int = 120,
+        host: str = "graph.facebook.com",
+    ):
         self.access_token = access_token
-        self.base_url = f"https://graph.facebook.com/{api_version}"
+        self.base_url = f"https://{host}/{api_version}"
         self.timeout = timeout
 
     def _check(self, payload: Any) -> dict[str, Any]:
@@ -117,6 +123,21 @@ class GraphClient:
                     files={"filename": fh},
                     data={"access_token": self.access_token},
                     timeout=self.timeout,
+                )
+
+        return self._parse(self._send(enviar))
+
+    def post_file(
+        self, path: str, field: str, file_path: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """POST multipart com um arquivo local no campo `field` (ex.: "source")."""
+        data = dict(data or {})
+        data["access_token"] = self.access_token
+
+        def enviar():
+            with open(file_path, "rb") as fh:
+                return requests.post(
+                    f"{self.base_url}/{path}", files={field: fh}, data=data, timeout=self.timeout
                 )
 
         return self._parse(self._send(enviar))

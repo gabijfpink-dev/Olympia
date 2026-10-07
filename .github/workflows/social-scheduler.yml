@@ -1,0 +1,68 @@
+# Publica as postagens agendadas (Facebook, Instagram, LinkedIn) na nuvem,
+# sem depender de computador ligado. Guia: social_scheduler/README.md
+#
+# O conteúdo (planilhas + imagens) fica num repositório PRIVADO à parte
+# (variável SOCIAL_CONTENT_REPO), porque este repositório é público.
+name: Postagens agendadas
+
+on:
+  schedule:
+    # A cada 10 min (UTC). O GitHub pode atrasar alguns minutos em horário de pico;
+    # o Facebook não sofre com isso porque fica agendado no próprio Facebook.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: social-scheduler
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: vars.SOCIAL_CONTENT_REPO != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixar conteúdo (repositório privado)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOCIAL_CONTENT_REPO }}
+          token: ${{ secrets.SOCIAL_CONTENT_TOKEN }}
+          path: conteudo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Publicar / agendar
+        env:
+          # Todos os secrets em JSON; o código só usa os SOCIAL_ENV_<CLIENTE>.
+          SOCIAL_SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: python -m social_scheduler cloud-run --content-dir conteudo
+
+      - name: Salvar o que já foi publicado (estado.json)
+        if: always()
+        working-directory: conteudo
+        run: |
+          git config user.name "agendador-de-posts"
+          git config user.email "agendador-de-posts@users.noreply.github.com"
+          git add -- '*/estado.json' || true
+          if git diff --cached --quiet; then
+            echo "Nada novo pra salvar."
+            exit 0
+          fi
+          git commit -m "Atualiza estado das postagens"
+          for tentativa in 1 2 3 4; do
+            git pull --rebase && git push && exit 0
+            sleep $((tentativa * 5))
+          done
+          echo "::error::Não consegui salvar o estado.json — risco de repostar. Verifique o repositório de conteúdo."
+          exit 1
